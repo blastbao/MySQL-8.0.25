@@ -8036,6 +8036,7 @@ dberr_t Fil_shard::do_io(const IORequest &type, bool sync,
   }
 #else /* UNIV_HOTBACKUP */
   /* Queue the aio request */
+  /* 将 io 入列, 无论同步 IO 还是异步 IO. */
   err = os_aio(
       req_type, aio_mode, file->name, file->handle, buf, offset, len,
       fsp_is_system_temporary(page_id.space()) ? false : srv_read_only_mode,

@@ -5727,6 +5727,7 @@ bool buf_page_io_complete(buf_page_t *bpage, bool evict) {
       debugging! */
 
       if (uncompressed) {
+        /* 对于读请求释放 Page 的 X 锁. */
         rw_lock_x_unlock_gen(&((buf_block_t *)bpage)->lock, BUF_IO_READ);
       }
 
@@ -5745,6 +5746,7 @@ bool buf_page_io_complete(buf_page_t *bpage, bool evict) {
       buf_flush_write_complete(bpage);
 
       if (uncompressed) {
+        /* 对于写请求释放 Page 的 SX 锁. */
         rw_lock_sx_unlock_gen(&((buf_block_t *)bpage)->lock, BUF_IO_WRITE);
       }
 
@@ -5761,6 +5763,7 @@ bool buf_page_io_complete(buf_page_t *bpage, bool evict) {
         ut_ad(has_LRU_mutex);
       }
 
+      /* 对于写操作, 需要将 LRU list 的 Page 摘除. */
       if (evict && buf_LRU_free_page(bpage, true)) {
         has_LRU_mutex = false;
       } else {
