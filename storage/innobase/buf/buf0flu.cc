@@ -1382,6 +1382,7 @@ ibool buf_flush_page(buf_pool_t *buf_pool, buf_page_t *bpage,
         buf_flush_sync_datafiles();
       }
 
+      /* 针对写操作需要对 Page 加 SX 锁. */
       rw_lock_sx_lock_gen(rw_lock, BUF_IO_WRITE);
     }
 
