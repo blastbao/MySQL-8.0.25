@@ -1548,8 +1548,7 @@ static inline size_t compute_how_much_to_write(const log_t &log,
   because write-ahead is needed. In such case we could write
   together with the last incomplete block after copying. */
   /* 判断是否允许直接从 redo log buffer 写入, 否则需要使用 write-ahead
-   * buffer, 对于写入大小超过 512 字节的 redo log 直接从 log buffer 写入.
-   */
+   * buffer, 对于写入大小超过 512 字节的 redo log 直接从 log buffer 写入. */
   write_from_log_buffer = write_size >= OS_FILE_LOG_BLOCK_SIZE;
 
   if (write_from_log_buffer) {
@@ -1570,8 +1569,16 @@ static inline size_t compute_how_much_to_write(const log_t &log,
       /* 下一个 write_ahead buffer 的起始位置. */
       const auto next_wa = compute_next_write_ahead_end(real_offset);
 
+			/* note. 这里有一个隐藏的假设：
+       * a. 当某次写 IO 的目的偏移地址是与 log_sys->write_ahead_buf 当前覆盖范围
+       * 的结束地址对齐时，则假定该次写 IO 目标区域在内存没有对应的 page cache，需
+       * 要重新执行一次 write ahead 操作.
+       *
+       * b. 当执行一次 write ahead 逻辑后，在接下来的一段时间内，该区域对应的 page
+       * cache 会保存在内存中，后续对当前 write ahead buffer 可以覆盖的文件区域的
+       * 写 IO，都可以命中这些 page cache, 从而避免额外的读 IO 开销. */
       if (!write_ahead_enough(next_wa, real_offset, write_size)) {
-        /* 仍然不满足完整写入本次 redo log. */
+        /* 新开的 write_ahead buffer 仍然不满足完整写入本次 redo log. */
         /* ... and also the next write-ahead is too small.
         Therefore we have more data to write than size of
         the write-ahead. We write from the log buffer,
@@ -1598,7 +1605,7 @@ static inline size_t compute_how_much_to_write(const log_t &log,
     } else {
       /* We limit write up to the end of region
       we have written ahead already. */
-      /* 计算本次写入的基于 write_ahead 能写入的最大字节数. */
+      /* 计算本次写入的基于 write_ahead buffer 能写入的最大字节数. */
       write_size =
           static_cast<size_t>(log.write_ahead_end_offset - real_offset);
 
@@ -1770,7 +1777,7 @@ static inline size_t prepare_for_write_ahead(log_t &log, uint64_t real_offset,
 
   ut_a(real_offset + write_size <= next_wa);
 
-  /* 新开辟的 write_ahead buffer, 第一次写入后续需要以 0x00 填充的长度. */
+  /* 新开辟的 write_ahead buffer, 第一次写入后续的空洞需要以 0x00 填充. */
   size_t write_ahead =
       static_cast<size_t>(next_wa - (real_offset + write_size));
 
@@ -1873,7 +1880,6 @@ static void log_files_write_buffer(log_t &log, byte *buffer, size_t buffer_size,
     same block as the one in which we did the previous write. */
 #endif /* UNIV_DEBUG */
 
-    /* 仅针对写入长度小于 512 字节的 redo log. */
     write_buf = log.write_ahead_buf;
 
     /* We write all the data directly from the write-ahead buffer,

@@ -6454,6 +6454,7 @@ space_id_t fil_space_get_id_by_name(const char *name) {
 @param[in] read_only_mode
                         if true, then read only mode checks are enforced.
 @return DB_SUCCESS or error code */
+/* 文件填 0 .*/
 static dberr_t fil_write_zeros(const fil_node_t *file, ulint page_size,
                                os_offset_t start, os_offset_t len,
                                bool read_only_mode) {
@@ -6695,6 +6696,7 @@ bool Fil_shard::space_extend(fil_space_t *space, page_no_t size) {
 #if !defined(NO_FALLOCATE) && defined(UNIV_LINUX)
     /* This is required by FusionIO HW/Firmware */
 
+    /* 为文件预分配物理空间. */
     int ret = posix_fallocate(file->handle.m_file, node_start, len);
 
     DBUG_EXECUTE_IF("ib_posix_fallocate_fail_eintr", ret = EINTR;);
@@ -6733,12 +6735,15 @@ bool Fil_shard::space_extend(fil_space_t *space, page_no_t size) {
 
     if ((tbsp_extend_and_initialize && !file->atomic_write) ||
         err == DB_IO_ERROR) {
+      /* 假如设置了 tbsp_extend_and_initialize 为 true, 即 allocated 空间后
+       * 填 0 并且该文件没有打开原子写, 我们需要对该文件进行填 0 操作. */
       bool read_only_mode;
 
       read_only_mode =
           (space->purpose != FIL_TYPE_TEMPORARY ? false : srv_read_only_mode);
 
       err =
+          /* 文件填 0. */
           fil_write_zeros(file, phy_page_size, node_start, len, read_only_mode);
 
       if (err != DB_SUCCESS) {
@@ -6806,6 +6811,7 @@ bool Fil_shard::space_extend(fil_space_t *space, page_no_t size) {
 @param[in,out]	space		Tablespace ID
 @param[in]	size		desired size in pages
 @return whether the tablespace is at least as big as requested */
+/* 扩展 Space 空间. */
 bool fil_space_extend(fil_space_t *space, page_no_t size) {
   auto shard = fil_system->shard_by_id(space->id);
 
@@ -8036,7 +8042,7 @@ dberr_t Fil_shard::do_io(const IORequest &type, bool sync,
   }
 #else /* UNIV_HOTBACKUP */
   /* Queue the aio request */
-  /* 将 io 入列, 无论同步 IO 还是异步 IO. */
+  /* 将 IO 入列, 无论同步 IO 还是异步 IO. */
   err = os_aio(
       req_type, aio_mode, file->name, file->handle, buf, offset, len,
       fsp_is_system_temporary(page_id.space()) ? false : srv_read_only_mode,

@@ -5758,12 +5758,16 @@ bool buf_page_io_complete(buf_page_t *bpage, bool evict) {
       * BUF_FLUSH_LRU: always evict
       * BUF_FLUSH_SINGLE_PAGE: eviction preference is passed
       by the caller explicitly. */
+      /* 需要注意 LRU list 的 evict 策略:
+       * 1. 针对 BUF_FLUSH_LIST 无需 evict.
+       * 2. 针对 BUF_FLUSH_LRU 的刷脏需要 evict page.
+       * 3. 针对 BUF_FLUSH_SINGLE_PAGE 需要调用者判断. */
       if (flush_type == BUF_FLUSH_LRU) {
         evict = true;
         ut_ad(has_LRU_mutex);
       }
 
-      /* 对于写操作, 需要将 LRU list 的 Page 摘除. */
+      /* 针对 LRU list 的刷脏操作, 需要将 Page 从 LRU list 摘除. */
       if (evict && buf_LRU_free_page(bpage, true)) {
         has_LRU_mutex = false;
       } else {
