@@ -884,11 +884,13 @@ void Double_write::prepare(const buf_page_t *bpage, void **ptr,
       ut_ad(state == buf_block_get_state(block));
     }
 
+    /* 获取数据 frame. */
     *ptr =
         reinterpret_cast<buf_block_t *>(const_cast<buf_page_t *>(bpage))->frame;
 
     UNIV_MEM_ASSERT_RW(*ptr, bpage->size.logical());
 
+    /* 获取数据长度. */
     *len = bpage->size.logical();
   }
 }
@@ -1085,6 +1087,7 @@ void Double_write::check_block(const buf_block_t *block) noexcept {
   croak(block);
 }
 
+/* 将 Page 写入 .ibd 数据文件. */
 dberr_t Double_write::write_to_datafile(const buf_page_t *in_bpage, bool sync,
                                         const file::Block *e_block,
                                         uint32_t e_len) noexcept {
@@ -1122,6 +1125,7 @@ dberr_t Double_write::write_to_datafile(const buf_page_t *in_bpage, bool sync,
   }
 #endif /* UNIV_DEBUG */
 
+  /* 通过 fil_io() 接口完成写入. */
   auto err =
       fil_io(io_request, sync, bpage->id, bpage->size, 0, len, frame, bpage);
 
@@ -1633,6 +1637,7 @@ dberr_t Double_write::create_single_segments(
   return DB_SUCCESS;
 }
 
+/* 加密 Page. */
 file::Block *dblwr::get_encrypted_frame(buf_page_t *bpage,
                                         uint32_t &e_len) noexcept {
   space_id_t space_id = bpage->space();
@@ -1667,6 +1672,7 @@ file::Block *dblwr::get_encrypted_frame(buf_page_t *bpage,
   fil_node_t *node = space->get_file_node(&page_no);
   type.block_size(node->block_size);
 
+  /* 准备工作, 获取 frame 和 len. */
   Double_write::prepare(bpage, &frame, &len);
 
   ulint n = len;
@@ -1690,6 +1696,7 @@ file::Block *dblwr::get_encrypted_frame(buf_page_t *bpage,
   }
 
   space->get_encryption_info(type.get_encryption_info());
+  /* 加密 Page. */
   auto e_block = os_file_encrypt_page(type, frame, &n);
 
   if (compressed_block != nullptr) {
@@ -1726,6 +1733,8 @@ dberr_t dblwr::write(buf_flush_t flush_type, buf_page_t *bpage,
     /* Skip the double-write buffer since it is not needed. Temporary
     tablespaces are never recovered, therefore we don't care about
     torn writes. */
+    /* 对于上述条件，不需要走 double-write buffer 情况, 直接通过
+     * Double_write::write_to_datafile 完成数据 Page 写入. */
     bpage->set_dblwr_batch_id(std::numeric_limits<uint16_t>::max());
     err = Double_write::write_to_datafile(bpage, sync, nullptr, 0);
     if (err == DB_PAGE_IS_STALE || err == DB_TABLESPACE_DELETED) {
@@ -1739,6 +1748,7 @@ dberr_t dblwr::write(buf_flush_t flush_type, buf_page_t *bpage,
         fil_flush(space_id);
       }
       /* true means we want to evict this page from the LRU list as well. */
+      /* 对于同步写入的 Page, 这里会完成收尾工作. */
       buf_page_io_complete(bpage, true);
     }
 
@@ -1748,12 +1758,19 @@ dberr_t dblwr::write(buf_flush_t flush_type, buf_page_t *bpage,
     /* Encrypt the page here, so that the same encrypted contents are written
     to the dblwr file and the data file. */
     uint32_t e_len{};
+    /* 加密 Page.
+     * a. 对于 page_no == 0, 不会加密.
+     * b. 对于关闭了 srv_undo_log_encrypt 参数的 undo tablespace 不会加密.
+     * c. 对于正加密的 space 不会加密.
+     * d. 对于 Encryption key information is not available 的情况不会加密. */
     file::Block *e_block = dblwr::get_encrypted_frame(bpage, e_len);
 
     if (!sync && flush_type != BUF_FLUSH_SINGLE_PAGE) {
+      /* 对于异步刷脏并且 flush_type 不是 BUF_FLUSH_SINGLE_PAGE 的情况. */
       MONITOR_INC(MONITOR_DBLWR_ASYNC_REQUESTS);
 
       ut_d(bpage->release_io_responsibility());
+      /* 提交 IO 写请求至 double write 队列. */
       Double_write::submit(flush_type, bpage, e_block, e_len);
       err = DB_SUCCESS;
 #ifdef UNIV_DEBUG
@@ -1762,6 +1779,7 @@ dberr_t dblwr::write(buf_flush_t flush_type, buf_page_t *bpage,
       }
 #endif /* UNIV_DEBUG */
     } else {
+      /* 同步写入的情况. */
       MONITOR_INC(MONITOR_DBLWR_SYNC_REQUESTS);
       /* Disable batch completion in write_complete(). */
       bpage->set_dblwr_batch_id(std::numeric_limits<uint16_t>::max());
@@ -1922,12 +1940,15 @@ dberr_t dblwr::open(bool create_new_db) noexcept {
   ut_a(Double_write::s_n_instances == 0);
 
   /* Separate instances for LRU and FLUSH list write requests. */
+  /* 一个 buffer pool instance 分为 LRU 和 Flush List. */
   Double_write::s_n_instances = std::max(4UL, srv_buf_pool_instances * 2);
 
   /* Batch segments per dblwr file. */
   uint32_t segments_per_file{};
 
   if (dblwr::n_files == 0) {
+    /* 默认为一个 buffer pool instance 创建两个 double-write buffer 文件. */
+    /* 由参数 innodb_doublewrite_files 控制. */
     dblwr::n_files = 2;
   }
 
@@ -1935,12 +1956,14 @@ dberr_t dblwr::open(bool create_new_db) noexcept {
       << "Double write buffer files: " << dblwr::n_files;
 
   if (dblwr::n_pages == 0) {
+    /* 默认 double-write buffer 的 Page 数量是 Write IO 的线程数. */
     dblwr::n_pages = srv_n_write_io_threads;
   }
 
   ib::info(ER_IB_MSG_DBLWR_1323)
       << "Double write buffer pages per instance: " << dblwr::n_pages;
 
+  /* 设置 double-write buffer 文件数量和每个 segment 的文件数量. */
   if (Double_write::s_n_instances < dblwr::n_files) {
     segments_per_file = 1;
     Double_write::s_files.resize(Double_write::s_n_instances);
@@ -1958,6 +1981,7 @@ dberr_t dblwr::open(bool create_new_db) noexcept {
 
   /* Create the files (if required) and make them the right size. */
   for (auto &file : Double_write::s_files) {
+    /* 创建 ib_xxxxx_x.dblwr 文件. */
     err = dblwr_file_open(dblwr::dir, &file - first, file, OS_DBLWR_FILE);
 
     if (err != DB_SUCCESS) {
@@ -1973,6 +1997,7 @@ dberr_t dblwr::open(bool create_new_db) noexcept {
           SYNC_PAGE_FLUSH_SLOTS / (Double_write::s_files.size() / 2);
     }
 
+    /* 初始化文件, 填 0. */
     err = Double_write::init_file(file, pages_per_file);
 
     if (err != DB_SUCCESS) {

@@ -1569,14 +1569,14 @@ static inline size_t compute_how_much_to_write(const log_t &log,
       /* 下一个 write_ahead buffer 的起始位置. */
       const auto next_wa = compute_next_write_ahead_end(real_offset);
 
-			/* note. 这里有一个隐藏的假设：
+			/* Note. 这里有一个隐藏的假设：
        * a. 当某次写 IO 的目的偏移地址是与 log_sys->write_ahead_buf 当前覆盖范围
-       * 的结束地址对齐时，则假定该次写 IO 目标区域在内存没有对应的 page cache，需
+       * 的结束地址对齐时，则假定该次写 IO 目标区域在内存没有对应的 Page Cache，需
        * 要重新执行一次 write ahead 操作.
        *
-       * b. 当执行一次 write ahead 逻辑后，在接下来的一段时间内，该区域对应的 page
-       * cache 会保存在内存中，后续对当前 write ahead buffer 可以覆盖的文件区域的
-       * 写 IO，都可以命中这些 page cache, 从而避免额外的读 IO 开销. */
+       * b. 当执行一次 write ahead 逻辑后，在接下来的一段时间内，该区域对应的 Page
+       * Cache 会保存在内存中，后续对当前 write_ahead buffer 可以覆盖的文件区域的
+       * 写 IO，都可以命中这些 Page Cache, 从而避免额外的读 IO 开销. */
       if (!write_ahead_enough(next_wa, real_offset, write_size)) {
         /* 新开的 write_ahead buffer 仍然不满足完整写入本次 redo log. */
         /* ... and also the next write-ahead is too small.
@@ -1615,11 +1615,25 @@ static inline size_t compute_how_much_to_write(const log_t &log,
 
   } else {
     if (write_from_log_buffer) {
-      /* 512 向下取整对齐写入. */
+      /* 512 字节向下取整对齐写入. */
+      /* 这个路径代表当前的 write_ahead buffer 已经能 cover 此次写入, 所以直接
+       * 512 字节对齐写入(写入对应的 Page 已经存在 Page Cache 中). */
       write_size = ut_uint64_align_down(write_size, OS_FILE_LOG_BLOCK_SIZE);
     }
   }
 
+  /* 总结写 redo log 的各种情况:
+   * 1. 对于写入 redo log 小于 OS_FILE_LOG_BLOCK_SIZE 的情况, 并且满足 write_ahead
+   * buffer 的写入(无论是当前的 write_ahead 还是下次重新开辟 write_ahead buffer 的
+   * 写入, 都通过 log_buffer->write_ahead buffer 的方式写入.
+   *
+   * 2. 对于写入 redo log 大于 OS_FILE_LOG_BLOCK_SIZE 的情况, 并且满足 write_ahead
+   * buffer 的写入(无论是当前的 write_ahead 还是下次重新开辟 write_ahead buffer 的
+   * 写入, 都通过 log_buffer->write_ahead buffer 的方式写入.
+   *
+   * 3. 对于写入 redo log 大于 OS_FILE_LOG_BLOCK_SIZE 的情况，但是不满足 write_ahead
+   * buffer 的写入(无论是当前的 write_ahead buffer 还是下次重新开辟 write_ahead buffer
+   * 的写入), 需要通过 log_buffer 直接写入的方式完成. */
   return (write_size);
 }
 
@@ -1777,7 +1791,7 @@ static inline size_t prepare_for_write_ahead(log_t &log, uint64_t real_offset,
 
   ut_a(real_offset + write_size <= next_wa);
 
-  /* 新开辟的 write_ahead buffer, 第一次写入后续的空洞需要以 0x00 填充. */
+  /* 新开辟的 write_ahead, 第一次写入后续的空洞需要以 0x00 填充. */
   size_t write_ahead =
       static_cast<size_t>(next_wa - (real_offset + write_size));
 

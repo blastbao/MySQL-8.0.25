@@ -2355,6 +2355,7 @@ dberr_t srv_start(bool create_new_db) {
 
 files_checked:
 
+  /* 假如打开了 double-write buffer, 需要进行初始化. */
   if (dblwr::enabled && ((err = dblwr::open(create_new_db)) != DB_SUCCESS)) {
     return (srv_init_abort(err));
   }
