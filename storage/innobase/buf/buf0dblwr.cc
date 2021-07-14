@@ -422,6 +422,7 @@ class Double_write {
       frame = e_frame;
       len = e_len;
     } else {
+      /* 获取数据 frame 和 length. */
       prepare(bpage, &frame, &len);
     }
 
@@ -430,7 +431,9 @@ class Double_write {
     for (;;) {
       mutex_enter(&m_mutex);
 
+      /* 将数据 frame 拷入 m_buffer. */
       if (m_buffer.append(frame, len)) {
+        /* 拷入成功就 break. */
         break;
       }
 
@@ -443,6 +446,7 @@ class Double_write {
       ut_ad(!mutex_own(&m_mutex));
     }
 
+    /* 插入 m_buf_pages. */
     m_buf_pages.push_back(bpage, e_block, e_len);
 
     mutex_exit(&m_mutex);
@@ -484,7 +488,9 @@ class Double_write {
       return;
     }
 
+    /* 获取对应的 double write instance. */
     auto dblwr = instance(flush_type, bpage);
+    /* 将对应的 Page 写入 double-write buffer. */
     dblwr->enqueue(flush_type, bpage, e_block, e_len);
   }
 
@@ -1431,6 +1437,7 @@ bool Double_write::create_v1(page_no_t &page_no1,
   return true;
 }
 
+/* 读取 double-write buffer 文件 load 数据 Page. */
 dberr_t Double_write::load(dblwr::File &file, recv::Pages *pages) noexcept {
   os_offset_t size = os_file_get_size(file.m_pfs);
 
@@ -1453,6 +1460,7 @@ dberr_t Double_write::load(dblwr::File &file, recv::Pages *pages) noexcept {
 
   read_request.disable_compression();
 
+  /* 读取 Page 内容至 buffer. */
   auto err = os_file_read(read_request, file.m_name.c_str(), file.m_pfs,
                           buffer.begin(), 0, buffer.capacity());
 
@@ -1465,6 +1473,7 @@ dberr_t Double_write::load(dblwr::File &file, recv::Pages *pages) noexcept {
   auto page = buffer.begin();
 
   for (uint32_t i = 0; i < n_pages; ++i) {
+    /* 添加 Page. */
     pages->add(i, page, univ_page_size.physical());
     page += univ_page_size.physical();
   }
@@ -1485,10 +1494,13 @@ void Double_write::write_pages(buf_flush_t flush_type) noexcept {
     std::this_thread::yield();
   }
 
+  /* 设置 m_batch_running = true. */
   batch_segment->start(this);
 
+  /* 将 double-write buffer 内容写入 double-write 文件. */
   batch_segment->write(m_buffer);
 
+  /* 清理 double-write buffer. */
   m_buffer.clear();
 
 #ifndef _WIN32
@@ -1499,7 +1511,9 @@ void Double_write::write_pages(buf_flush_t flush_type) noexcept {
 
   batch_segment->set_batch_size(m_buf_pages.size());
 
+  /* 写入 double-write 文件完成后, 将 Page 分别写入对应的数据文件. */
   for (uint32_t i = 0; i < m_buf_pages.size(); ++i) {
+    /* 获取对应的数据 Page. */
     const auto bpage = std::get<0>(m_buf_pages.m_pages[i]);
 
     ut_d(auto page_id = bpage->id);
@@ -1507,6 +1521,7 @@ void Double_write::write_pages(buf_flush_t flush_type) noexcept {
     bpage->set_dblwr_batch_id(batch_segment->id());
 
     ut_d(bpage->take_io_responsibility());
+    /* 将 Page 写入 .ibd 数据文件. */
     auto err =
         write_to_datafile(bpage, false, std::get<1>(m_buf_pages.m_pages[i]),
                           std::get<2>(m_buf_pages.m_pages[i]));
@@ -1539,6 +1554,7 @@ void Double_write::write_pages(buf_flush_t flush_type) noexcept {
 
   m_buf_pages.clear();
 
+  /* 唤醒 aio 线程完成异步写入. */
   os_aio_simulated_wake_handler_threads();
 }
 
@@ -1748,7 +1764,7 @@ dberr_t dblwr::write(buf_flush_t flush_type, buf_page_t *bpage,
         fil_flush(space_id);
       }
       /* true means we want to evict this page from the LRU list as well. */
-      /* 对于同步写入的 Page, 这里会完成收尾工作. */
+      /* 对于同步写入的 Page, 参数 true 意味着将从 LRU list 移除 Page. */
       buf_page_io_complete(bpage, true);
     }
 
@@ -2017,11 +2033,13 @@ dberr_t dblwr::open(bool create_new_db) noexcept {
 
   /* Create the segments that for LRU and FLUSH list batches writes */
   if (err == DB_SUCCESS) {
+    /* 针对 LRU 和 FLUSH list 创建 segments. */
     err = Double_write::create_batch_segments(segments_per_file);
   }
 
   /* Create the segments for the single page flushes. */
   if (err == DB_SUCCESS) {
+    /* 针对 BUF_FLUSH_SINGLE_PAGE 创建 segments. */
     err = Double_write::create_single_segments(segments_per_file);
   }
 
@@ -2420,9 +2438,11 @@ void recv::Pages::check_missing_tablespaces() const noexcept {
   }
 }
 
+/* 读取 double-write buffer 文件 load 数据 Page. */
 dberr_t dblwr::recv::load(recv::Pages *pages) noexcept {
 #ifndef UNIV_HOTBACKUP
   /* For cloned database double write pages should be ignored. */
+  /* 判断是否打开 double-write buffer. */
   if (!dblwr::enabled) {
     return DB_SUCCESS;
   }
@@ -2512,6 +2532,7 @@ dberr_t dblwr::recv::load(recv::Pages *pages) noexcept {
     dblwr::File file;
 
     /* Open the file for reading. */
+    /* 打开 double-write buffer 文件. */
     auto err = dblwr_file_open(dblwr::dir, i, file, OS_DATA_FILE);
 
     if (err == DB_NOT_FOUND) {
