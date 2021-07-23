@@ -2318,6 +2318,7 @@ dberr_t trx_undo_report_row_operation(
       mtr_commit(&mtr);
 
       undo->empty = FALSE;
+      /* undo->top_page_no 记录最新的 undo record 的 page no. */
       undo->top_page_no = page_no;
       undo->top_offset = offset;
       undo->top_undo_no = trx->undo_no;

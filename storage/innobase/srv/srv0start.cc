@@ -2463,6 +2463,7 @@ files_checked:
     /* We always try to do a recovery, even if the database had
     been shut down normally: this is the normal startup path */
 
+    /* InnoDB 进行 recover. */
     err = recv_recovery_from_checkpoint_start(*log_sys, flushed_lsn);
 
     if (err == DB_SUCCESS) {

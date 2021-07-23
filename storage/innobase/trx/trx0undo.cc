@@ -194,6 +194,7 @@ trx_undo_rec_t *trx_undo_get_prev_rec(
 {
   trx_undo_rec_t *prev_rec;
 
+  /* 对于无需要跨 Page 获取的 undo log reocrd. */
   prev_rec = trx_undo_page_get_prev_rec(rec, page_no, offset);
 
   if (prev_rec) {
@@ -203,6 +204,7 @@ trx_undo_rec_t *trx_undo_get_prev_rec(
   /* We have to go to the previous undo log page to look for the
   previous record */
 
+  /* 从前一个 Page 获取最后一个 undo log reocrd. */
   return (
       trx_undo_get_prev_rec_from_prev_page(rec, page_no, offset, shared, mtr));
 }
@@ -1043,6 +1045,7 @@ void trx_undo_free_last_page_func(
   ut_ad(undo->hdr_page_no != undo->last_page_no);
   ut_ad(undo->size > 0);
 
+  /* 释放一个 undo page, 并更新 last_page_no. */
   undo->last_page_no =
       trx_undo_free_page(undo->rseg, FALSE, undo->space, undo->hdr_page_no,
                          undo->last_page_no, mtr);
@@ -1155,14 +1158,21 @@ void trx_undo_truncate_end_func(
       ut_ad(trx->rsegs.m_redo.rseg == undo->rseg);
     }
 
+    /* undo->last_page_no 即当前回滚段最后的一个 page no. */
     const page_id_t page_id(undo->space, undo->last_page_no);
 
+    /* 获取当前回滚段最后一个 Page. */
     auto undo_page = trx_undo_page_get(page_id, undo->page_size, &mtr);
 
+    /* 获取是否可以 truncate 该 Page, undo header page 不允许 truncate:
+     * 1. Truncate nothing on this page. Return -1
+     * 2. Truncate part of the page. Return the offset
+     * 3. Truncate the whole page. Return 0 . */
     int trunc_offset = trx_undo_page_truncate_offset(undo, undo_page, limit);
 
     /* If offset is within the page, truncate part of the page and quit.*/
     if (trunc_offset > 0) {
+      /* 只能 truncate Page 的部分内容. */
       mlog_write_ulint(undo_page + TRX_UNDO_PAGE_HDR + TRX_UNDO_PAGE_FREE,
                        trunc_offset, MLOG_2BYTES, &mtr);
       break;
@@ -1170,11 +1180,13 @@ void trx_undo_truncate_end_func(
 
     /* If all recs are < limit, don't truncate anything. */
     if (trunc_offset < 0) {
+      /* 该 Page 不能进行 truncate. */
       break;
     }
 
     /* Free the last page and move on to the next. */
     ut_ad(undo->last_page_no != undo->hdr_page_no);
+    /* 可以 truncate 整个 Page. */
     trx_undo_free_last_page(trx, undo, &mtr);
 
     mtr.commit();

@@ -1287,6 +1287,7 @@ static void trx_start_low(
     /* Temporary rseg is assigned only if the transaction
     updates a temporary table */
 
+    /* 对于读写事务. */
     trx_sys_mutex_enter();
 
     trx->id = trx_sys_get_new_trx_id();
@@ -1309,6 +1310,7 @@ static void trx_start_low(
     trx_sys_mutex_exit();
 
   } else {
+    /* 对于纯读事务 id 设置为 0. */
     trx->id = 0;
 
     if (!trx_is_autocommit_non_locking(trx)) {
