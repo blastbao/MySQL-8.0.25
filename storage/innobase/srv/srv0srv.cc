@@ -3024,6 +3024,7 @@ static ulint srv_do_purge(ulint *n_total_purged) {
                        srv_shutdown_state.load() == SRV_SHUTDOWN_PURGE ||
                        (++count % srv_purge_rseg_truncate_frequency) == 0;
 
+    /* srv_purge_batch_size 默认 300 个 Page. */
     n_pages_purged =
         trx_purge(n_use_threads, srv_purge_batch_size, do_truncate);
 

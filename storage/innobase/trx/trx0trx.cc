@@ -1452,6 +1452,7 @@ static bool trx_write_serialisation_history(
 
   /* Get rollback segment mutex. */
   if (trx->rsegs.m_redo.rseg != nullptr && trx_is_redo_rseg_updated(trx)) {
+    /* 获取回滚段的 mutex. */
     trx->rsegs.m_redo.rseg->latch();
     own_redo_rseg_mutex = true;
   }
@@ -1485,6 +1486,7 @@ static bool trx_write_serialisation_history(
     if this is the first UNDO log being written to assigned
     rollback segments. */
 
+    /* 对于 update 操作, 需要做 purge 处理. */
     trx_undo_ptr_t *redo_rseg_undo_ptr =
         trx->rsegs.m_redo.update_undo != nullptr ? &trx->rsegs.m_redo : nullptr;
 
@@ -1493,6 +1495,8 @@ static bool trx_write_serialisation_history(
                                                    : nullptr;
 
     /* Will set trx->no and will add rseg to purge queue. */
+    /* 设置 trx->no 并将回滚段插入 purge 队列.
+     * 截止这一步, 回滚段的 purge 信息尚未更新. */
     serialised = trx_serialisation_number_get(trx, redo_rseg_undo_ptr,
                                               temp_rseg_undo_ptr);
 
@@ -1502,6 +1506,7 @@ static bool trx_write_serialisation_history(
     if (trx->rsegs.m_redo.update_undo != nullptr) {
       page_t *undo_hdr_page;
 
+      /* 更新 undo log segment 的事务信息, 例如 TRX_UNDO_STATE. */
       undo_hdr_page =
           trx_undo_set_state_at_finish(trx->rsegs.m_redo.update_undo, mtr);
 

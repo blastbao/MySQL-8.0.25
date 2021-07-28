@@ -1434,6 +1434,7 @@ static ulint trx_undo_page_report_modify(
         /* Notify purge that it eventually has to
         free the old externally stored field */
 
+        /* 对于 update 操作, 都需要设置 del_marks = TRUE. */
         undo_ptr->update_undo->del_marks = TRUE;
 
         *type_cmpl_ptr |= TRX_UNDO_UPD_EXTERN;

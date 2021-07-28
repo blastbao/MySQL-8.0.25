@@ -511,6 +511,8 @@ static ulint trx_undo_header_create(
   ut_ad(mtr && undo_page);
 
   page_hdr = undo_page + TRX_UNDO_PAGE_HDR;
+
+  /* undo log segment 的 header. */
   seg_hdr = undo_page + TRX_UNDO_SEG_HDR;
 
   free = mach_read_from_2(page_hdr + TRX_UNDO_PAGE_FREE);
@@ -530,10 +532,13 @@ static ulint trx_undo_header_create(
   prev_log = mach_read_from_2(seg_hdr + TRX_UNDO_LAST_LOG);
 
   if (prev_log != 0) {
+    /* 假如存在上一个 undo log header. */
     trx_ulogf_t *prev_log_hdr;
 
     prev_log_hdr = undo_page + prev_log;
 
+    /* 在上一个 undo log segment header 的 TRX_UNDO_NEXT_LOG 写当前
+     * undo log segment 空闲的起始偏移位置. */
     mach_write_to_2(prev_log_hdr + TRX_UNDO_NEXT_LOG, free);
   }
 
@@ -549,6 +554,7 @@ static ulint trx_undo_header_create(
   mach_write_to_1(log_hdr + TRX_UNDO_FLAGS, 0);
   mach_write_to_1(log_hdr + TRX_UNDO_DICT_TRANS, FALSE);
 
+  /* 当前的 undo log segment 的 TRX_UNDO_NEXT_LOG 设置为 0. */
   mach_write_to_2(log_hdr + TRX_UNDO_NEXT_LOG, 0);
   mach_write_to_2(log_hdr + TRX_UNDO_PREV_LOG, prev_log);
 
@@ -1045,7 +1051,7 @@ void trx_undo_free_last_page_func(
   ut_ad(undo->hdr_page_no != undo->last_page_no);
   ut_ad(undo->size > 0);
 
-  /* 释放一个 undo page, 并更新 last_page_no. */
+  /* 释放一个 Undo Page(fseg_free_page()), 并更新 last_page_no. */
   undo->last_page_no =
       trx_undo_free_page(undo->rseg, FALSE, undo->space, undo->hdr_page_no,
                          undo->last_page_no, mtr);
