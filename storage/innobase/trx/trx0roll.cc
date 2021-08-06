@@ -757,6 +757,7 @@ encountered in crash recovery.  If the transaction already was
 committed, then we clean up a possible insert undo log. If the
 transaction was not yet committed, then we roll it back.
 Note: this is done in a background thread. */
+/* 事务异步回滚. */
 void trx_recovery_rollback_thread() {
 #ifdef UNIV_PFS_THREAD
   THD *thd =
@@ -774,6 +775,7 @@ void trx_recovery_rollback_thread() {
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
 
+  /* 开启事务故障恢复的回滚. */
   trx_rollback_or_clean_recovered(TRUE);
 
   destroy_thd(thd);

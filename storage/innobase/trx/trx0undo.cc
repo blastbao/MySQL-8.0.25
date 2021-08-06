@@ -1167,7 +1167,7 @@ void trx_undo_truncate_end_func(
     /* undo->last_page_no 即当前回滚段最后的一个 page no. */
     const page_id_t page_id(undo->space, undo->last_page_no);
 
-    /* 获取当前回滚段最后一个 Page. */
+    /* 获取当前回滚段最后一个 page. */
     auto undo_page = trx_undo_page_get(page_id, undo->page_size, &mtr);
 
     /* 获取是否可以 truncate 该 Page, undo header page 不允许 truncate:
@@ -1178,7 +1178,10 @@ void trx_undo_truncate_end_func(
 
     /* If offset is within the page, truncate part of the page and quit.*/
     if (trunc_offset > 0) {
-      /* 只能 truncate Page 的部分内容. */
+      /* 只能 truncate undo page 的部分内容, 这里只是更新 TRX_UNDO_PAGE_FREE 信息. */
+
+      /* 对于 undo log segment 的 header page, 通过更新 TRX_UNDO_PAGE_FREE 信息, 在事务
+       * 回滚完成后进行 commit 阶段, 判断该 undo log segment 是否可以被复用. */
       mlog_write_ulint(undo_page + TRX_UNDO_PAGE_HDR + TRX_UNDO_PAGE_FREE,
                        trunc_offset, MLOG_2BYTES, &mtr);
       break;
@@ -1186,7 +1189,7 @@ void trx_undo_truncate_end_func(
 
     /* If all recs are < limit, don't truncate anything. */
     if (trunc_offset < 0) {
-      /* 该 Page 不能进行 truncate. */
+      /* 该 page 不能进行 truncate. */
       break;
     }
 
@@ -1340,6 +1343,7 @@ static trx_undo_t *trx_undo_mem_init(
   page_header = undo_page + TRX_UNDO_PAGE_HDR;
 
   type = mtr_read_ulint(page_header + TRX_UNDO_PAGE_TYPE, MLOG_2BYTES, mtr);
+  /* undo log segment 的 header. */
   seg_header = undo_page + TRX_UNDO_SEG_HDR;
 
   state = mach_read_from_2(seg_header + TRX_UNDO_STATE);
@@ -1381,6 +1385,7 @@ static trx_undo_t *trx_undo_mem_init(
   }
 
   undo->state = state;
+  /* 获取 undo log segment 的 undo page 数量. */
   undo->size = flst_get_len(seg_header + TRX_UNDO_PAGE_LIST);
 
   /* If the log segment is being freed, the page list is inconsistent! */
@@ -1447,12 +1452,14 @@ ulint trx_undo_lists_init(
 
   mtr.start();
 
+  /* 回滚段 header. */
   rseg_header =
       trx_rsegf_get_new(rseg->space_id, rseg->page_no, rseg->page_size, &mtr);
 
   for (i = 0; i < TRX_RSEG_N_SLOTS; i++) {
     page_no_t page_no;
 
+    /* 获取第 i 个 undo log segment 的 header page. */
     page_no = trx_rsegf_get_nth_undo(rseg_header, i, &mtr);
 
     /* In forced recovery: try to avoid operations which look
@@ -1464,6 +1471,10 @@ ulint trx_undo_lists_init(
         srv_force_recovery < SRV_FORCE_NO_UNDO_LOG_SCAN) {
       trx_undo_t *undo;
 
+      /* 构建 undo log segment 的内存结构,
+       * 获取 undo log 的类型: TRX_UNDO_INSERT/TRX_UNDO_UPDATE,
+       * 获取事务的状态信息: 是否为活跃事务,
+       * 获取事务的 id. */
       undo = trx_undo_mem_init(rseg, i, page_no, &mtr);
 
       size += undo->size;
@@ -1851,6 +1862,7 @@ page_t *trx_undo_set_state_at_finish(
   seg_hdr = undo_page + TRX_UNDO_SEG_HDR;
   page_hdr = undo_page + TRX_UNDO_PAGE_HDR;
 
+  /* Note: undo->size 的初始值是 1, 代表 undo log segment 的 page 数量. */
   if (undo->size == 1 && mach_read_from_2(page_hdr + TRX_UNDO_PAGE_FREE) <
                              TRX_UNDO_PAGE_REUSE_LIMIT) {
     state = TRX_UNDO_CACHED;

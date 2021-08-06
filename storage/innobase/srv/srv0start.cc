@@ -2463,7 +2463,7 @@ files_checked:
     /* We always try to do a recovery, even if the database had
     been shut down normally: this is the normal startup path */
 
-    /* InnoDB 进行 recover. */
+    /* InnoDB 开始 recover. */
     err = recv_recovery_from_checkpoint_start(*log_sys, flushed_lsn);
 
     if (err == DB_SUCCESS) {
@@ -2991,6 +2991,7 @@ void srv_start_threads(bool bootstrap) {
       trx_sys_need_rollback()) {
     /* Rollback all recovered transactions that are
     not in committed nor in XA PREPARE state. */
+    /* 启动事务回滚线程. */
     srv_threads.m_trx_recovery_rollback = os_thread_create(
         trx_recovery_rollback_thread_key, trx_recovery_rollback_thread);
 

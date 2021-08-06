@@ -715,6 +715,7 @@ static void trx_resurrect_table_ids(trx_t *trx, const trx_undo_ptr_t *undo_ptr,
       undo_page = undo_rec_page;
     }
 
+    /* 获取 table id. */
     trx_undo_rec_get_pars(undo_rec, &type, &cmpl_info, &updated_extern,
                           &undo_no, &table_id, type_cmpl);
     tables.insert(table_id);
@@ -958,8 +959,10 @@ static void trx_resurrect(trx_rseg_t *rseg) {
        undo = UT_LIST_GET_NEXT(undo_list, undo)) {
     trx = trx_resurrect_insert(undo, rseg);
 
+    /* 将事务添加至事务列表. */
     trx_sys_rw_trx_add(trx);
 
+    /* 恢复 table id, 用以在数据字段恢复时重新加锁 srv_dict_recover_on_restart(). */
     trx_resurrect_table_ids(trx, &trx->rsegs.m_redo, undo);
   }
 
@@ -982,8 +985,10 @@ static void trx_resurrect(trx_rseg_t *rseg) {
 
     trx_resurrect_update(trx, undo, rseg);
 
+    /* 将事务添加至事务列表. */
     trx_sys_rw_trx_add(trx);
 
+    /* 恢复 table id, 用以在数据字段恢复时重新加锁 srv_dict_recover_on_restart(). */
     trx_resurrect_table_ids(trx, &trx->rsegs.m_redo, undo);
   }
 }

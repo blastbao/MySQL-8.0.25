@@ -438,6 +438,8 @@ void ReadView::prepare(trx_id_t id) {
 
   ut_ad(m_up_limit_id <= m_low_limit_id);
 
+  /* serialisation_list 是事务的提交顺序列表, 在 undo log purge 阶段,
+   * 小于 m_low_limit_no 的 undo log 都可以进行 purge. */
   if (UT_LIST_GET_LEN(trx_sys->serialisation_list) > 0) {
     const trx_t *trx;
 

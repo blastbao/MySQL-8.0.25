@@ -342,6 +342,7 @@ void trx_purge_add_update_undo_to_history(
       ib::fatal(ER_IB_MSG_1165) << "undo->id is " << undo->id;
     }
 
+    /* 将 undo log segment 重新放入回滚段 header 的 TRX_RSEG_UNDO_SLOTS. */
     trx_rsegf_set_nth_undo(rseg_header, undo->id, FIL_NULL, mtr);
 
     MONITOR_DEC(MONITOR_NUM_UNDO_SLOT_USED);
@@ -2047,6 +2048,7 @@ static MY_ATTRIBUTE((warn_unused_result))
         mem_heap_t *heap)       /*!< in: memory heap where copied */
 {
   if (!purge_sys->next_stored) {
+    /* 选择待 purge 的回滚段. */
     trx_purge_choose_next_log();
 
     if (!purge_sys->next_stored) {
@@ -2057,7 +2059,7 @@ static MY_ATTRIBUTE((warn_unused_result))
 
   if (purge_sys->iter.trx_no >= purge_sys->view.low_limit_no()) {
     /* 对于 trx_no 超过了 purge_sys->view.low_limit_no() 的事务是
-     * 无法进行 purge 的. */
+     * 不能进行 purge 的. */
     return nullptr;
   }
 

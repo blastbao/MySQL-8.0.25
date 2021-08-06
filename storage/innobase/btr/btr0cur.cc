@@ -4318,6 +4318,7 @@ dberr_t btr_cur_del_mark_set_clust_rec(
 
   page_zip = buf_block_get_page_zip(block);
 
+  /* 仅设置 record 的 delete 标记. */
   btr_rec_set_deleted_flag(rec, page_zip, TRUE);
 
   /* For intrinsic table, roll-ptr is not maintained as there is no UNDO
@@ -4557,6 +4558,7 @@ ibool btr_cur_optimistic_delete_func(
 
   /* This is intended only for leaf page deletions */
 
+  /* 数据 page. */
   block = btr_cur_get_block(cursor);
 
   ut_ad(page_is_leaf(buf_block_get_frame(block)));
@@ -4572,6 +4574,7 @@ ibool btr_cur_optimistic_delete_func(
       btr_cur_can_delete_without_compress(cursor, rec_offs_size(offsets), mtr);
 
   if (no_compress_needed) {
+    /* 针对无需压缩 b tree 的情况. */
     page_t *page = buf_block_get_frame(block);
     page_zip_des_t *page_zip = buf_block_get_page_zip(block);
 
@@ -4597,6 +4600,9 @@ ibool btr_cur_optimistic_delete_func(
     } else {
       const ulint max_ins = page_get_max_insert_size_after_reorganize(page, 1);
 
+      /* 非压缩 page 删除 record, 区别于事务阶段的仅仅标记 record 为 delete marked,
+       * purge 阶段的删除会将 record 进行清理, 修改前置后置 record 等, 用户下次的查询
+       * 不会再访问到该 record.*/
       page_cur_delete_rec(btr_cur_get_page_cur(cursor), cursor->index, offsets,
                           mtr);
 
@@ -4612,6 +4618,7 @@ ibool btr_cur_optimistic_delete_func(
   } else {
     /* prefetch siblings of the leaf for the pessimistic
     operation. */
+    /* 乐观删除失败, 预先获取相邻的 page. */
     btr_cur_prefetch_siblings(block);
   }
 
@@ -4622,6 +4629,7 @@ ibool btr_cur_optimistic_delete_func(
   return (no_compress_needed);
 }
 
+/* 悲观删除. */
 ibool btr_cur_pessimistic_delete(dberr_t *err, ibool has_reserved_extents,
                                  btr_cur_t *cursor, uint32_t flags,
                                  bool rollback, trx_id_t trx_id,

@@ -2329,6 +2329,7 @@ dberr_t trx_undo_report_row_operation(
 
       mutex_exit(&trx->undo_mutex);
 
+      /* offset 是 undo record 写在 undo page 的偏移. */
       *roll_ptr =
           trx_undo_build_roll_ptr(op_type == TRX_UNDO_INSERT_OP,
                                   undo_ptr->rseg->space_id, page_no, offset);
@@ -2352,6 +2353,7 @@ dberr_t trx_undo_report_row_operation(
     counterpart of the tree latch, which is the rseg mutex. */
 
     undo_ptr->rseg->latch();
+    /* 新申请一个 undo page. */
     undo_block = trx_undo_add_page(trx, undo, undo_ptr, &mtr);
     undo_ptr->rseg->unlatch();
 
