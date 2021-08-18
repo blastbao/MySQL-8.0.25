@@ -1520,6 +1520,7 @@ lock_rec_req_status lock_rec_lock_fast(
 
   if (lock == nullptr) {
     if (!impl) {
+      /* 假如不是隐式锁. */
       RecLock rec_lock(index, block, heap_no, mode);
 
       trx_mutex_enter(trx);
@@ -1534,12 +1535,19 @@ lock_rec_req_status lock_rec_lock_fast(
     if (lock_rec_get_next_on_page(lock) != nullptr || lock->trx != trx ||
         lock->type_mode != (mode | LOCK_REC) ||
         lock_rec_get_n_bits(lock) <= heap_no) {
+      /* 1. 确保只有一个事务锁 lock_rec_get_next_on_page(lock) != nullptr.
+       * 2. 确保该事务锁与申请的事务是同一个.
+       * 3. 确保该事务锁类型
+       * 4. 并且该事务锁的 bitmap 能够记录当前的 heap no.
+       * 5. 否则申请锁失败. */
       status = LOCK_REC_FAIL;
     } else if (!impl) {
       /* If the nth bit of the record lock is already set
       then we do not set a new lock bit, otherwise we do
       set */
       if (!lock_rec_get_nth_bit(lock, heap_no)) {
+        /* 设置 lock 的 bitmap 的 heap no, 所以事务的一个 lock 可以记录单个 page 上的
+         * 多个 record. */
         lock_rec_set_nth_bit(lock, heap_no);
         status = LOCK_REC_SUCCESS_CREATED;
       }
@@ -1738,6 +1746,7 @@ static dberr_t lock_rec_lock(bool impl, select_mode sel_mode, ulint mode,
   ut_ad(!impl || ((mode & LOCK_REC_NOT_GAP) == LOCK_REC_NOT_GAP));
   /* We try a simplified and faster subroutine for the most
   common cases */
+  /* 尝试申请 record lock. */
   switch (lock_rec_lock_fast(impl, mode, block, heap_no, index, thr)) {
     case LOCK_REC_SUCCESS:
       return (DB_SUCCESS);
@@ -2202,9 +2211,11 @@ static void lock_rec_grant(lock_t *in_lock) {
   there are at least two waiters to arbitrate among, but in practice the current
   simple heuristic is good enough. */
   bool found_waiter = false;
+  /* 查找当前等待的 lock. */
   for (auto lock = lock_rec_get_first_on_page_addr(lock_hash, page_id);
        lock != nullptr; lock = lock_rec_get_next_on_page(lock)) {
     if (lock->is_waiting()) {
+      /* 查找成功. */
       found_waiter = true;
       break;
     }
@@ -2213,6 +2224,7 @@ static void lock_rec_grant(lock_t *in_lock) {
     mon_type_t grant_attempts = 0;
     for (ulint heap_no = 0; heap_no < lock_rec_get_n_bits(in_lock); ++heap_no) {
       if (lock_rec_get_nth_bit(in_lock, heap_no)) {
+        /* 假如第 heap_no 位记录的 lock 信息, 则选择等待事务进行锁的 grant. */
         lock_rec_grant_by_heap_no(in_lock, heap_no);
         ++grant_attempts;
       }
@@ -2231,7 +2243,9 @@ to a lock. NOTE: all record locks contained in in_lock are removed.
                                 lock requests granted, if they are now
                                 qualified to it */
 static void lock_rec_dequeue_from_page(lock_t *in_lock) {
+  /* 移除记录锁. */
   lock_rec_discard(in_lock);
+  /* 授予等待的事务记录锁. */
   lock_rec_grant(in_lock);
 }
 
@@ -2255,6 +2269,7 @@ void lock_rec_discard(lock_t *in_lock) {
 
   locksys::remove_from_trx_locks(in_lock);
 
+  /* 从 hash 列表移除 lock. */
   HASH_DELETE(lock_t, hash, lock_hash_get(in_lock->type_mode),
               lock_rec_fold(page_id), in_lock);
 
@@ -4164,6 +4179,7 @@ static void lock_release(trx_t *trx) {
   */
   trx_mutex_enter(trx);
 
+  /* 释放事务锁: trx->lock.trx_locks 记录当前事务所有持有的 lock. */
   ut_ad(trx->lock.wait_lock == nullptr);
   while ((lock = UT_LIST_GET_LAST(trx->lock.trx_locks)) != nullptr) {
     /* Following call temporarily releases trx->mutex */
