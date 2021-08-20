@@ -583,7 +583,7 @@ static uint64_t lock_wait_snapshot_waiting_threads(
       auto from = thr_get_trx(slot->thr);
       auto to = from->lock.blocking_trx.load();
       if (to != nullptr) {
-        /* 保存事务的等待依赖关系. */
+        /* 保存事务的等待关系. */
         infos.push_back({from, to, slot, slot->reservation_no});
       }
     }
@@ -636,8 +636,8 @@ static void lock_wait_compute_initial_weights(
     /* reservation_no 是事务进入等待状态时的 lock_wait_table_reservations 的值,
      * table_reservations 是开始进行快照时 lock_wait_table_reservations 的值,
      * 所以假如 infos[from].reservation_no + MAX_FAIR_WAIT 小于 table_reservations
-     * 的情况出现就代表事务 "from" 等待的时间挺长的, 所以将其权重置为两倍的等待事务
-     * 数量(2n). */
+     * 的情况出现就代表事务 "from" 等待的时间较长, 为了防止饿死, 所以将其权重置为
+     * 两倍的等待事务数量(n). */
     if (infos[from].reservation_no + MAX_FAIR_WAIT < table_reservations) {
       new_weights[from] = WEIGHT_BOOST;
     }
@@ -693,9 +693,9 @@ static void lock_wait_build_wait_for_graph(
     }
     auto to = it - infos.begin();
     ut_ad(from != static_cast<uint>(to));
-    /* 构造事务的等待依赖关系.
+    /* 构造事务的等待关系.
      * to 代表 from 的等待事务是 infos 数组的第几个, -1 代表等待的事务
-     * 不存在于当前的依赖图中. 即 from 等待的事务没有需要等待的锁. */
+     * 不存在于当前的等待关系图中. 即 from 等待的事务没有需要等待的锁. */
     outgoing[from] = static_cast<int>(to);
   }
 }
@@ -867,7 +867,7 @@ static void lock_wait_accumulate_weights(
     }
   }
 
-  /* outgoing 记录的事务的等待依赖关系.
+  /* outgoing 记录的事务的等待关系.
    * outgoing 的 value 代表是第 id 个事务等待的事务索引下标. */
   while (!ready.empty()) {
     size_t id = ready.back();
@@ -1376,12 +1376,12 @@ static void lock_wait_compute_incoming_count(const ut::vector<int> &outgoing,
   incoming_count.resize(n, 0);
   for (size_t id = 0; id < n; ++id) {
     /* outgoing 记录的是等待 lock 的事务正在等待的事务 ID,
-     * -1 代表被等待的事务不存在当前的等待关系依赖图中.
+     * -1 代表被等待的事务不存在当前的等待关系图中.
      * 等待关系图记录了所有被阻塞的事务. */
     const auto to = outgoing[id];
     if (to != -1) {
       /* to 代表的是第 id 个事务所等待的事务索引下标.
-       * to != -1 即代表该事务也存在于当前的等待依赖关系里,
+       * to != -1 即代表该事务也存在于当前的等待关系里,
        * 将 to 的入度(指向该顶点的边的总数)加一. */
       incoming_count[to]++;
     }

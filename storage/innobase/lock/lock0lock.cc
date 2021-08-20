@@ -1131,6 +1131,7 @@ void RecLock::lock_add(lock_t *lock) {
 
   lock->index->table->n_rec_locks.fetch_add(1, std::memory_order_relaxed);
 
+  /* 已经获取的 lock 放在队列头部, 等待的 lock 在队尾. */
   if (!wait) {
     lock_rec_insert_to_granted(lock_hash, lock, m_rec_id);
   } else {
@@ -1303,6 +1304,7 @@ dberr_t RecLock::add_to_waitq(const lock_t *wait_for, const lock_prdt_t *prdt) {
   /* Don't queue the lock to hash table, if high priority transaction. */
   lock_t *lock = create(m_trx, prdt);
 
+  /* 构造等待关系. */
   lock_create_wait_for_edge(m_trx, wait_for->trx);
 
   ut_ad(lock_get_wait(lock));
@@ -2052,6 +2054,7 @@ static void lock_rec_grant_by_heap_no(lock_t *in_lock, ulint heap_no) {
 #ifdef UNIV_DEBUG
   bool seen_waiting_lock = false;
 #endif
+  /* 迭代 hash table 中的 lock. */
   Lock_iter::for_each(
       rec_id,
       [&](lock_t *lock) {
@@ -2077,12 +2080,14 @@ static void lock_rec_grant_by_heap_no(lock_t *in_lock, ulint heap_no) {
         each write to blocking_trx is done while holding the latch. So, even
         though we use memory_order_relaxed we will see modifications performed
         before we acquired the latch. */
+        /* 获取等待队列的 lock 的阻塞事务. */
         const auto blocking_trx =
             trx->lock.blocking_trx.load(std::memory_order_relaxed);
         /* No one should be WAITING without good reason! */
         ut_ad(blocking_trx);
         /* We will only consider granting the `lock`, if we are the reason it
         was waiting. */
+        /* 该 lock 的阻塞事务与待释放锁的事务不同则返回. */
         if (blocking_trx != in_trx) {
           return (true);
         }
@@ -2097,12 +2102,16 @@ static void lock_rec_grant_by_heap_no(lock_t *in_lock, ulint heap_no) {
         have to take a snapshot of all schedule_weight atomics, so they don't
         change during call to stable_sort in a way which causes the algorithm to
         crash. */
+        /* 获取事务的权重. */
         const auto schedule_weight =
             trx->lock.schedule_weight.load(std::memory_order_relaxed);
         if (schedule_weight <= 1) {
+          /* 小于等于1, 即插入低优先级队列,
+           * lock.schedule_weight 初始值是 0. */
           low_priority_light.push_back(lock);
           return (true);
         }
+        /* 否则插入 low_priority_heavier 队列. */
         low_priority_heavier.push_back(LockDescriptorEx{schedule_weight, lock});
 
         return (true);
@@ -2115,13 +2124,17 @@ static void lock_rec_grant_by_heap_no(lock_t *in_lock, ulint heap_no) {
     return;
   }
   /* We want high schedule weight to be in front, and break ties by position */
+  /* 根据事务的权重进行排序. */
   std::stable_sort(low_priority_heavier.begin(), low_priority_heavier.end(),
                    [](const LockDescriptorEx &a, const LockDescriptorEx &b) {
                      return (a.first > b.first);
                    });
+  /* waiting 的队头是高优先级事务. */
+  /* 再插入权重非 1 的事务. */
   for (const auto &descriptor : low_priority_heavier) {
     waiting.push_back(descriptor.second);
   }
+  /* 最后插入权重为 1 的事务. */
   waiting.insert(waiting.end(), low_priority_light.begin(),
                  low_priority_light.end());
 
@@ -2130,6 +2143,7 @@ static void lock_rec_grant_by_heap_no(lock_t *in_lock, ulint heap_no) {
 
   granted.reserve(granted.size() + waiting.size());
 
+  /* wait 根据上述的原则收集了等待事务, 进行迭代. */
   for (lock_t *wait_lock : waiting) {
     /* Check if the transactions in the waiting queue have
     to wait for locks granted above. If they don't have to
@@ -2143,12 +2157,14 @@ static void lock_rec_grant_by_heap_no(lock_t *in_lock, ulint heap_no) {
     const lock_t *blocking_lock =
         lock_rec_has_to_wait_for_granted(wait_lock, granted, new_granted_index);
     if (blocking_lock == nullptr) {
+      /* 假如等待事务还在等待中, 授予 lock. */
       lock_grant(wait_lock);
 
       lock_rec_move_granted_to_front(wait_lock, rec_id);
 
       granted.push_back(wait_lock);
     } else {
+      /* 更新等待关系. */
       lock_update_wait_for_edge(wait_lock, blocking_lock);
     }
   }
