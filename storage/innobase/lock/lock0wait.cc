@@ -989,6 +989,8 @@ static trx_t *lock_wait_choose_victim(
       }
     }
 
+    /* 选择一个权重小的事务回滚:
+     * ((t)->undo_no + UT_LIST_GET_LEN((t)->lock.trx_locks)). */
     if (trx_weight_ge(chosen_victim, trx)) {
       /* The joining transaction is 'smaller',
       choose it as the victim and roll it back. */
@@ -1246,6 +1248,7 @@ static bool lock_wait_check_candidate_cycle(
   lock_reset_lock_and_trx_wait() resets trx->lock.wait_lock to NULL.
   Checking trx->lock.wait_lock in reliable way requires global exclusive latch.
   */
+  /* X 锁. */
   locksys::Global_exclusive_latch_guard gurad{UT_LOCATION_HERE};
   if (!lock_wait_trxs_are_still_waiting(cycle_ids, infos)) {
     lock_wait_mutex_exit();
@@ -1265,6 +1268,7 @@ static bool lock_wait_check_candidate_cycle(
 
   lock_wait_mutex_exit();
 
+  /* 选择一个回滚事务. */
   trx_t *const chosen_victim = lock_wait_choose_victim(cycle_ids, infos);
   ut_a(chosen_victim);
 
@@ -1320,8 +1324,21 @@ static void lock_wait_find_and_handle_deadlocks(
   cycle_ids.clear();
   ut::vector<uint> colors;
   colors.clear();
+  /* colors 默认值为 0. */
   colors.resize(n, 0);
   uint current_color = 0;
+  /* 如何检测死锁?
+   * outgoing 记录了锁的等待关系, 例如
+   * 事务 T1 等待 T2 的锁...
+   * 被等待的事务: [T2] [T3] [T1] [T2]
+   * 等待中的事务: [T1] [T2] [T3] [T4]
+   * outgoing[0] = 1, 0 是 T1 的下标, 1 是被等待的事务 T2 的下标.
+   * 死锁的检测方式就是迭代  outgoing, 使用 colors 记录迭代的路径来判断是否回环.
+   * 例如上述等待关系,
+   * outgoing[0] = 1, outgoing[1] = 2, outgoing[3] = 1
+   * colors 的值代表当前的迭代 value.
+   * colors[0] = 1, colors[1] = 1, colors[2] = 1,
+   * 所以当再次迭代到事务 1 时, 会发现 colors[0] 的值已经是 1 了, 即回环出现. */
   for (uint start = 0; start < n; ++start) {
     if (colors[start] != 0) {
       /* This node was already fully processed*/
@@ -1345,6 +1362,7 @@ static void lock_wait_find_and_handle_deadlocks(
         can stop now */
       if (colors[id] == current_color) {
         /* found a candidate cycle! */
+        /* 构造回环的等待关系. */
         lock_wait_extract_cycle_ids(cycle_ids, id, outgoing);
         if (lock_wait_check_candidate_cycle(cycle_ids, infos, new_weights)) {
           MONITOR_INC(MONITOR_DEADLOCK);
