@@ -139,7 +139,7 @@ descriptor page, but used only in the first. */
 #define FSP_SIZE                    \
   8 /* Current size of the space in \
     pages */
-/* 目前在空闲的 Extent 上最小的尚未被初始化的 Page 的 Page Number.
+/* FSP_FREE_LIMIT 是目前在空闲的 Extent 上最小的尚未被初始化的 Page 的 Page Number.
  * (注意是 Page Number) */
 #define FSP_FREE_LIMIT                       \
   12 /* Minimum page number for which the    \

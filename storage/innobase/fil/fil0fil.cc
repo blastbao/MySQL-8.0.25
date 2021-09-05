@@ -6618,6 +6618,7 @@ bool Fil_shard::space_extend(fil_space_t *space, page_no_t size) {
   mutex_release();
 
   page_no_t pages_added;
+  /* 获取当前文件的大小. */
   os_offset_t node_start = os_file_get_size(file->handle);
 
   ut_a(node_start != (os_offset_t)-1);
@@ -6626,17 +6627,20 @@ bool Fil_shard::space_extend(fil_space_t *space, page_no_t size) {
   page_no_t node_first_page = space->size - file->size;
 
   /* Number of physical pages in the file */
+  /* 当前物理文件有多少个 page. */
   page_no_t n_node_physical_pages =
       static_cast<page_no_t>(node_start / phy_page_size);
 
   /* Number of pages to extend in the file */
   page_no_t n_node_extend;
 
+  /* 需要的扩展多少个 page. */
   n_node_extend = size - (node_first_page + file->size);
 
   /* If we already have enough physical pages to satisfy the
   extend request on the file then ignore it */
   if (file->size + n_node_extend > n_node_physical_pages) {
+    /* 物理文件不满足扩展的 page 数量, 需要进行 fallocate. */
     DBUG_EXECUTE_IF("ib_crash_during_tablespace_extension", DBUG_SUICIDE(););
 
     os_offset_t len;
@@ -6754,14 +6758,17 @@ bool Fil_shard::space_extend(fil_space_t *space, page_no_t size) {
     }
 
     /* Check how many pages actually added */
+    /* 计算当前物理文件大小 (bytes). */
     os_offset_t end = os_file_get_size(file->handle);
     ut_a(end != static_cast<os_offset_t>(-1) && end >= node_start);
 
     os_has_said_disk_full = !(success = (end == node_start + len));
 
+    /* 计算当前物理文件有多少个 page. */
     pages_added = static_cast<page_no_t>(end / phy_page_size);
 
     ut_a(pages_added >= file->size);
+    /* 计算 extend 了多少个 page. */
     pages_added -= file->size;
 
   } else {
@@ -6772,6 +6779,7 @@ bool Fil_shard::space_extend(fil_space_t *space, page_no_t size) {
 
   mutex_acquire();
 
+  /* 分别增加 page 数量. */
   file->size += pages_added;
   space->size += pages_added;
 
