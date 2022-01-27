@@ -957,6 +957,7 @@ static void trx_resurrect(trx_rseg_t *rseg) {
   /* Resurrect transactions that were doing inserts. */
   for (undo = UT_LIST_GET_FIRST(rseg->insert_undo_list); undo != nullptr;
        undo = UT_LIST_GET_NEXT(undo_list, undo)) {
+    /* 构造事务. */
     trx = trx_resurrect_insert(undo, rseg);
 
     /* 将事务添加至事务列表. */

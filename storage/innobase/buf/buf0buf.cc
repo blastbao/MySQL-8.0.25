@@ -2044,6 +2044,7 @@ static void buf_pool_resize() {
 
   /* Assumes that buf_resize_thread has already issued the necessary
   memory barrier to read srv_buf_pool_size and srv_buf_pool_old_size */
+  /* 通过 innodb_buffer_pool_size_update 更新 srv_buf_pool_size 后重新计算. */
   new_instance_size = srv_buf_pool_size / srv_buf_pool_instances;
   new_instance_size /= UNIV_PAGE_SIZE;
 
@@ -2068,9 +2069,11 @@ static void buf_pool_resize() {
     buf_flush_list_mutex_exit(buf_pool);
 #endif
 
+    /* 新的 instance 大小. */
     buf_pool->curr_size = new_instance_size;
 
     ut_ad(srv_buf_pool_chunk_unit % UNIV_PAGE_SIZE == 0);
+    /* 新的 chunk 大小. */
     buf_pool->n_chunks_new =
         new_instance_size * UNIV_PAGE_SIZE / srv_buf_pool_chunk_unit;
 
@@ -2099,13 +2102,17 @@ static void buf_pool_resize() {
   /* set withdraw target */
   for (ulint i = 0; i < srv_buf_pool_instances; i++) {
     buf_pool = buf_pool_from_array(i);
+    /* 对于缩减 Buffer Pool 的大小的情况. */
     if (buf_pool->curr_size < buf_pool->old_size) {
       ulint withdraw_target = 0;
 
+      /* 新的 chunk 偏移。 */
       const buf_chunk_t *chunk = buf_pool->chunks + buf_pool->n_chunks_new;
+      /* 旧的 chunk 偏移。 */
       const buf_chunk_t *echunk = buf_pool->chunks + buf_pool->n_chunks;
 
       while (chunk < echunk) {
+        /* 需要缩减的 Page 数量. */
         withdraw_target += chunk->size;
         ++chunk;
       }
@@ -2128,6 +2135,11 @@ withdraw_retry:
   for (ulint i = 0; i < srv_buf_pool_instances; i++) {
     buf_pool = buf_pool_from_array(i);
     if (buf_pool->curr_size < buf_pool->old_size) {
+      /* 根据计算的新旧 chunk 偏移区间判断一个 Page 是否需要被回收. */
+      /* 1. 从 free_list 中释放属于回收区间的 Page.
+       * 2. 进行 LRU_list 刷脏, 将 LRU_list 中属于回收区间的 Page 进行
+       * 重分配(buf_page_realloc(): 从 free_list 中重新申请 Page 并且将释放的
+       * Page 插入 withdraw 列表).*/
       should_retry_withdraw |= buf_pool_withdraw_blocks(buf_pool);
     }
   }
@@ -2250,6 +2262,7 @@ withdraw_retry:
   buf_chunk_map_reg = UT_NEW_NOKEY(buf_pool_chunk_map_t());
 
   /* add/delete chunks */
+  /* 申请/释放 chunk 内存. */
   for (ulint i = 0; i < srv_buf_pool_instances; ++i) {
     buf_pool_t *buf_pool = buf_pool_from_array(i);
     buf_chunk_t *chunk;
@@ -2522,6 +2535,7 @@ void buf_resize_thread() {
       continue;
     }
 
+    /* Buffer Pool 的 resize 操作. */
     buf_pool_resize();
   }
 }
