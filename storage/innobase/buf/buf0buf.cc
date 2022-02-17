@@ -1553,6 +1553,7 @@ static bool buf_page_realloc(buf_pool_t *buf_pool, buf_block_t *block) {
 
   ut_ad(mutex_own(&buf_pool->LRU_list_mutex));
 
+  /* 从 free_list 中获取一个空闲 page. */
   new_block = buf_LRU_get_free_only(buf_pool);
 
   if (new_block == nullptr) {
@@ -1786,6 +1787,7 @@ static bool buf_pool_withdraw_blocks(buf_pool_t *buf_pool) {
     }
 
     /* reserve free_list length */
+    /* 回收 LRU list. */
     if (UT_LIST_GET_LEN(buf_pool->withdraw) < buf_pool->withdraw_target) {
       ulint scan_depth;
       ulint n_flushed = 0;
@@ -1814,6 +1816,7 @@ static bool buf_pool_withdraw_blocks(buf_pool_t *buf_pool) {
 
     mutex_enter(&buf_pool->LRU_list_mutex);
     buf_page_t *bpage;
+    /* 释放 lru_list 的 page, 因为 lru_list 的 page 在 chunk 的物理位置是乱序的, 所以需要依次判断. */
     bpage = UT_LIST_GET_FIRST(buf_pool->LRU);
     while (bpage != nullptr) {
       BPageMutex *block_mutex;
@@ -2139,7 +2142,7 @@ withdraw_retry:
       /* 1. 从 free_list 中释放属于回收区间的 Page.
        * 2. 进行 LRU_list 刷脏, 将 LRU_list 中属于回收区间的 Page 进行
        * 重分配(buf_page_realloc(): 从 free_list 中重新申请 Page 并且将释放的
-       * Page 插入 withdraw 列表).*/
+       * Page 插入 withdraw list).*/
       should_retry_withdraw |= buf_pool_withdraw_blocks(buf_pool);
     }
   }

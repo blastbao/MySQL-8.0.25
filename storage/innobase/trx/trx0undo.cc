@@ -1799,6 +1799,7 @@ dberr_t trx_undo_assign_undo(
           ? nullptr
           :
 #endif
+          /* 是否可以复用. */
           trx_undo_reuse_cached(trx, rseg, type, trx->id, trx->xid,
                                 gtid_storage, &mtr);
 
@@ -1865,9 +1866,11 @@ page_t *trx_undo_set_state_at_finish(
   /* Note: undo->size 的初始值是 1, 代表 undo log segment 的 page 数量. */
   if (undo->size == 1 && mach_read_from_2(page_hdr + TRX_UNDO_PAGE_FREE) <
                              TRX_UNDO_PAGE_REUSE_LIMIT) {
+    /* 对于 undo log segment 的 page 数量为 1 的可以进行复用并且使用空间小于 75 %. */
     state = TRX_UNDO_CACHED;
 
   } else if (undo->type == TRX_UNDO_INSERT) {
+    /* insert 类型可以直接释放, 因为无需 MVCC. */
     state = TRX_UNDO_TO_FREE;
   } else {
     state = TRX_UNDO_TO_PURGE;
@@ -1989,10 +1992,12 @@ void trx_undo_insert_cleanup(trx_undo_ptr_t *undo_ptr, bool noredo) {
   undo_ptr->insert_undo = nullptr;
 
   if (undo->state == TRX_UNDO_CACHED) {
+    /* 可以重用. */
     UT_LIST_ADD_FIRST(rseg->insert_undo_cached, undo);
 
     MONITOR_INC(MONITOR_NUM_UNDO_SLOT_CACHED);
   } else {
+    /* 可以直接被释放. */
     ut_ad(undo->state == TRX_UNDO_TO_FREE);
 
     /* Delete first the undo log segment in the file */
