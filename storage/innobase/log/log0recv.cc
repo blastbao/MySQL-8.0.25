@@ -3914,6 +3914,7 @@ dberr_t recv_recovery_from_checkpoint_start(log_t &log, lsn_t flush_lsn) {
 
   contiguous_lsn = checkpoint_lsn;
 
+  /* 从 checkpoint 文件记录的 lsn 开始进行 recovery. */
   recv_recovery_begin(log, &contiguous_lsn);
 
   lsn_t recovered_lsn;

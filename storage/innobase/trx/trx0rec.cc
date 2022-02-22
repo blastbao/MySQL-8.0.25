@@ -2218,6 +2218,7 @@ dberr_t trx_undo_report_row_operation(
       undo = undo_ptr->insert_undo;
 
       if (undo == nullptr) {
+        /* 为 insert 操作分配 undo log segment. */
         err = trx_undo_assign_undo(trx, undo_ptr, TRX_UNDO_INSERT);
         undo = undo_ptr->insert_undo;
 
@@ -2236,6 +2237,7 @@ dberr_t trx_undo_report_row_operation(
       undo = undo_ptr->update_undo;
 
       if (undo == nullptr) {
+        /* 为 update 操作分配 undo log segment. */
         err = trx_undo_assign_undo(trx, undo_ptr, TRX_UNDO_UPDATE);
         undo = undo_ptr->update_undo;
 
