@@ -104,6 +104,7 @@ savepoint. */
 
 /** Check if memo contains the given item.
 @return	true if contains */
+/// 判断锁对象是否在memo当中
 #define mtr_memo_contains(m, o, t) (m)->memo_contains((m)->get_memo(), (o), (t))
 
 /** Check if memo contains the given page.
@@ -119,7 +120,19 @@ savepoint. */
 @return	log */
 #define mtr_get_log(m) (m)->get_log()
 
+
+
+// memo 的 latch 管理接口：
+//    mtr_memo_push	获得一个latch，并将状态信息存入mtr memo当中
+//    mtr_memo_slot_t   保存latch内容
+//    mtr_release_s_latch_at_savepoint	释放memo偏移savepoint的slot锁状态
+//    mtr_memo_contains	判断锁对象是否在memo当中
+//    mtr_memo_slot_release	释放slot锁的控制权
+//    mtr_memo_pop_all	释放所有memo中的锁的控制权
+
+
 /** Push an object to an mtr memo stack. */
+///  获得一个latch，并将状态信息存入mtr memo当中
 #define mtr_memo_push(m, o, t) (m)->memo_push(o, t)
 
 /** Lock an rw-lock in s-mode. */
@@ -139,6 +152,7 @@ savepoint. */
 #define mtr_memo_contains_page_flagged(m, p, l) \
   (m)->memo_contains_page_flagged((p), (l))
 
+/// 释放memo偏移savepoint的slot锁状态
 #define mtr_release_block_at_savepoint(m, s, b) \
   (m)->release_block_at_savepoint((s), (b))
 
@@ -158,30 +172,50 @@ struct fil_space_t;
 
 /** Mini-transaction memo stack slot. */
 struct mtr_memo_slot_t {
+
   /** pointer to the object */
+  /* latch 对象，可以是 rw_lock_t 对象，也可以是 buf_block_t 对象*/
   void *object;
 
   /** type of the stored object (MTR_MEMO_S_LOCK, ...) */
+  /* latch 类型
+    取值如下：
+      MTR_MEMO_PAGE_S_FIX	/rw_locks-latch/
+      MTR_MEMO_PAGE_X_FIX	/rw_lockx-latch/
+      MTR_MEMO_BUF_FIX	    /buf_block_t/
+      MTR_MEMO_S_LOCK	    /rw_lock s-latch/
+      MTR_MEMO_X_LOCK	    /rw_lock x-latch/
+  */
   ulint type;
 };
 
 /** Mini-transaction handle and buffer */
 struct mtr_t {
+
   /** State variables of the mtr */
   struct Impl {
+
     /** memo stack for locks etc. */
+    /*正在持有的latch列表*/
+    /// memo 用来存储所有这个物理事务用到（访问）的页面，这些页面都是被所属的物理事务上了锁的（读锁或者写锁，某些时候会不上锁）；
     mtr_buf_t m_memo;
 
     /** mini-transaction log */
+    /*mtr产生的日志数据*/
+    /// log 用来存储这个物理事务在访问修改数据页面的过程中产生的所有日志，这个日志就是数据库中经常说到的重做（redo log）日志；
+
+
     mtr_buf_t m_log;
 
     /** true if mtr has made at least one buffer pool page dirty */
+    /*是否产生脏页*/
     bool m_made_dirty;
 
     /** true if inside ibuf changes */
     bool m_inside_ibuf;
 
     /** true if the mini-transaction modified buffer pool pages */
+    /*是否修改了页*/
     bool m_modifications;
 
     /** true if mtr is forced to NO_LOG mode because redo logging is
@@ -195,20 +229,32 @@ struct mtr_t {
 
     /** Count of how many page initial log records have been
     written to the mtr log */
+    /*log操作页的个数*/
+    // n_log_recs 表示这个物理事务操作的页个数；
     ib_uint32_t m_n_log_recs;
 
     /** specifies which operations should be logged; default
     value MTR_LOG_ALL */
+    /*log操作模式，MTR_LOG_ALL、MTR_LOG_NONE、MTR_LOG_SHORT_INSERTS*/
+    /// log_mode 表示这个物理事务的日志模式，包括 MTR_LOG_ALL（写日志）、MTR_LOG_NONE（不写日志）等；
     mtr_log_t m_log_mode;
 
     /** State of the transaction */
+    /* mtr的状态，
+        MTR_ACTIVE、
+        MTR_COMMITING、
+        MTR_COMMITTED
+    */
     mtr_state_t m_state;
+
 
     /** Flush Observer */
     FlushObserver *m_flush_observer;
 
 #ifdef UNIV_DEBUG
+
     /** For checking corruption. */
+    /*魔法字*/
     ulint m_magic_n;
 
 #endif /* UNIV_DEBUG */
@@ -217,28 +263,36 @@ struct mtr_t {
     mtr_t *m_mtr;
   };
 
+
 #ifndef UNIV_HOTBACKUP
+
   /** mtr global logging */
   class Logging {
+
    public:
+
     /** mtr global redo logging state.
     Enable Logging  :
-    [ENABLED] -> [ENABLED_RESTRICT] -> [DISABLED]
-
+        [ENABLED] -> [ENABLED_RESTRICT] -> [DISABLED]
     Disable Logging :
-    [DISABLED] -> [ENABLED_RESTRICT] -> [ENABLED_DBLWR] -> [ENABLED] */
+        [DISABLED] -> [ENABLED_RESTRICT] -> [ENABLED_DBLWR] -> [ENABLED]
+    */
 
     enum State : uint32_t {
+
       /* Redo Logging is enabled. Server is crash safe. */
       ENABLED,
+
       /* Redo logging is enabled. All non-logging mtr are finished with the
       pages flushed to disk. Double write is enabled. Some pages could be
       still getting written to disk without double-write. Not safe to crash. */
       ENABLED_DBLWR,
+
       /* Redo logging is enabled but there could be some mtrs still running
       in no logging mode. Redo archiving and clone are not allowed to start.
       No double-write */
       ENABLED_RESTRICT,
+
       /* Redo logging is disabled and all new mtrs would not generate any redo.
       Redo archiving and clone are not allowed. */
       DISABLED
@@ -342,13 +396,18 @@ struct mtr_t {
   void check_nolog_and_unmark();
 #endif /* !UNIV_HOTBACKUP */
 
+
+  // 构造函数
   mtr_t() {
     m_impl.m_state = MTR_STATE_INIT;
     m_impl.m_marked_nolog = false;
     m_impl.m_shard_index = 0;
   }
 
+  // 析构函数
   ~mtr_t() {
+
+// 调试
 #ifdef UNIV_DEBUG
     switch (m_impl.m_state) {
       case MTR_STATE_ACTIVE:
@@ -362,6 +421,7 @@ struct mtr_t {
         ut_error;
     }
 #endif /* UNIV_DEBUG */
+
 #ifndef UNIV_HOTBACKUP
     /* Safety check in case mtr is not committed. */
     if (m_impl.m_state != MTR_STATE_INIT) {
@@ -371,6 +431,7 @@ struct mtr_t {
   }
 
 #ifdef UNIV_DEBUG
+
   /** Removed the MTR from the s_my_thread_active_mtrs list. */
   void remove_from_debug_list() const;
 
@@ -381,14 +442,19 @@ struct mtr_t {
 
   /** Start a mini-transaction.
   @param sync		true if it is a synchronous mini-transaction
-  @param read_only	true if read only mini-transaction */
+  @param read_only	true if read only mini-transaction
+  */
   void start(bool sync = true, bool read_only = false);
 
   /** @return whether this is an asynchronous mini-transaction. */
-  bool is_async() const { return (!m_sync); }
+  bool is_async() const {
+    return (!m_sync);
+  }
 
   /** Request a future commit to be synchronous. */
-  void set_sync() { m_sync = true; }
+  void set_sync() {
+    m_sync = true;
+  }
 
   /** Commit the mini-transaction. */
   void commit();

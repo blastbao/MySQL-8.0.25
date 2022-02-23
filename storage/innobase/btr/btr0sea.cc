@@ -1741,8 +1741,7 @@ void btr_search_update_hash_node_on_insert(btr_cur_t *cursor) {
       (cursor->n_bytes == block->curr_n_bytes) && !block->curr_left_side) {
     table = btr_get_search_table(index);
 
-    if (ha_search_and_update_if_found(table, cursor->fold, rec, block,
-                                      page_rec_get_next(rec))) {
+    if (ha_search_and_update_if_found(table, cursor->fold, rec, block, page_rec_get_next(rec))) {
       MONITOR_INC(MONITOR_ADAPTIVE_HASH_ROW_UPDATED);
     }
 

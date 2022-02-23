@@ -1057,6 +1057,34 @@ caller is DDTableBuffer which manages a table with only a clustered index.
 It is up to the caller to ensure atomicity and to ensure correct recovery by
 calling btr_truncate_recover().
 @param[in]	index		clustered index */
+
+
+/*
+
+btr_truncate 函数将一个 BTree truncate 到只剩 root 节点，具体实现这里暂不用关心，
+不过上面有一步是需要将 root page header 的 PAGE_MAX_TRX_ID 修改为 IB_ID_MAX ，
+这个操作算是修改 page 上的数据，这里就需要通过 mtr 来做，具体：
+
+(A)
+mtr.start() 开启一个 mini transaction
+(B)
+mtr_x_lock() 加锁，这个操作分成两步，
+    1. 对 space->latch 加 X 锁；
+    2. 将 space->latch 放入 mtr_t::m_impl::memo 中（这样在 mtr.commit() 后就可以将 mtr 之前加过的锁放掉）
+(C)
+mlog_write_ull 写数据，这个操作也分成两步，
+    1. 直接修改 page 上的数据；
+    2. 将该操作的 redo log 写入 mtr::m_impl::m_log 中
+(D)
+mtr.commit() 写 redo log + 放锁，这个操作会将上一步 m_log 中的内容写入 redo log file ，并且在最后锁放锁
+
+以上就是一个 mtr 大致的执行过程，这里仅需要知道 mtr.commit() 是开始写 redo log 的地方就可以了。
+
+
+流程：开启 mtr -> 加锁 -> 写数据 -> 写 redo log -> 释放锁 -> 提交 mtr 和放锁
+
+*/
+
 void btr_truncate(const dict_index_t *index) {
   ut_ad(index->is_clustered());
   ut_ad(index->next() == nullptr);
@@ -1069,29 +1097,38 @@ void btr_truncate(const dict_index_t *index) {
     return;
   }
 
+  // 页大小
   page_size_t page_size(space->flags);
+  // 页 ID
   const page_id_t page_id(space_id, root_page_no);
+
+  // 构造 MTR
   mtr_t mtr;
   buf_block_t *block;
 
+  // 启动 MTR
   mtr.start();
 
+  // 加 X 锁
   mtr_x_lock(&space->latch, &mtr);
 
+  // 读取 Page
   block = buf_page_get(page_id, page_size, RW_X_LATCH, &mtr);
-
   page_t *page = buf_block_get_frame(block);
   ut_ad(page_is_root(page));
 
   /* Mark that we are going to truncate the index tree
-  We use PAGE_MAX_TRX_ID as it should be always 0 for clustered
-  index. */
+    We use PAGE_MAX_TRX_ID as it should be always 0 for clustered index.
+  */
+  // 写 log
   mlog_write_ull(page + (PAGE_HEADER + PAGE_MAX_TRX_ID), IB_ID_MAX, &mtr);
 
+  // 提交 MTR
   mtr.commit();
 
-  mtr.start();
 
+
+  mtr.start();
   block = buf_page_get(page_id, page_size, RW_X_LATCH, &mtr);
 
   /* Free all except the root, we don't want to change it. */
@@ -1100,8 +1137,7 @@ void btr_truncate(const dict_index_t *index) {
   /* Reset the mark saying that we have finished the truncate.
   The PAGE_MAX_TRX_ID would be reset here. */
   page_create(block, &mtr, dict_table_is_comp(index->table), false);
-  ut_ad(buf_block_get_frame(block) + (PAGE_HEADER + PAGE_MAX_TRX_ID) ==
-        nullptr);
+  ut_ad(buf_block_get_frame(block) + (PAGE_HEADER + PAGE_MAX_TRX_ID) == nullptr);
 
   mtr.commit();
 
@@ -1112,8 +1148,9 @@ void btr_truncate(const dict_index_t *index) {
 
 /** Recovery function for btr_truncate. We will check if there is a
 crash during btr_truncate, if so, do recover it, if not, do nothing.
-@param[in]	index		clustered index */
+@param[in]	index	clustered index */
 void btr_truncate_recover(const dict_index_t *index) {
+
   ut_ad(index->is_clustered());
   ut_ad(index->next() == nullptr);
 
@@ -1228,27 +1265,21 @@ bool btr_page_reorganize_low(
   /* Recreate the page: note that global data on page (possible
   segment headers, next page-field, etc.) is preserved intact */
 
-  page_create(block, mtr, dict_table_is_comp(index->table),
-              fil_page_get_type(page));
+  page_create(block, mtr, dict_table_is_comp(index->table), fil_page_get_type(page));
 
   /* Copy the records from the temporary space to the recreated page;
   do not copy the lock bits yet */
 
-  page_copy_rec_list_end_no_locks(block, temp_block,
-                                  page_get_infimum_rec(temp_page), index, mtr);
+  page_copy_rec_list_end_no_locks(block, temp_block, page_get_infimum_rec(temp_page), index, mtr);
 
-  /* Multiple transactions cannot simultaneously operate on the
-  same temp-table in parallel.
-  max_trx_id is ignored for temp tables because it not required
-  for MVCC. */
-  if (dict_index_is_sec_or_ibuf(index) && page_is_leaf(page) &&
-      !index->table->is_temporary()) {
+  /* Multiple transactions cannot simultaneously operate on the same temp-table in parallel.
+  max_trx_id is ignored for temp tables because it not required for MVCC. */
+  if (dict_index_is_sec_or_ibuf(index) && page_is_leaf(page) && !index->table->is_temporary()) {
     /* Copy max trx id to recreated page */
     trx_id_t max_trx_id = page_get_max_trx_id(temp_page);
     page_set_max_trx_id(block, nullptr, max_trx_id, mtr);
-    /* In crash recovery, dict_index_is_sec_or_ibuf() always
-    holds, even for clustered indexes.  max_trx_id is
-    unused in clustered index pages. */
+    /* In crash recovery, dict_index_is_sec_or_ibuf() always holds, even for clustered indexes.
+    max_trx_id is unused in clustered index pages. */
     ut_ad(max_trx_id != 0 || recovery);
   }
 
@@ -4603,6 +4634,7 @@ static bool btr_can_merge_with_page(
     buf_block_t **merge_block, /*!< out: the merge block */
     mtr_t *mtr)                /*!< in: mini-transaction */
 {
+
   dict_index_t *index;
   page_t *page;
   ulint n_recs;
@@ -4682,14 +4714,14 @@ error:
 @param[in,out]	table		SDI table
 @return root page number of the SDI index created or FIL_NULL on failure */
 static page_no_t btr_sdi_create(space_id_t space_id,
-                                const page_size_t &page_size, mtr_t *mtr,
+                                const page_size_t &page_size,
+                                mtr_t *mtr,
                                 dict_table_t *table) {
   dict_index_t *index = table->first_index();
   ut_ad(index != nullptr);
   ut_ad(UT_LIST_GET_LEN(table->indexes) == 1);
 
-  index->page = btr_create(DICT_CLUSTERED | DICT_UNIQUE | DICT_SDI, space_id,
-                           page_size, index->id, index, mtr);
+  index->page = btr_create(DICT_CLUSTERED | DICT_UNIQUE | DICT_SDI, space_id, page_size, index->id, index, mtr);
 
   return (index->page);
 }
@@ -4733,8 +4765,7 @@ dberr_t btr_sdi_create_index(space_id_t space_id, bool dict_locked) {
     index->page = sdi_root_page_num;
   }
 
-  buf_block_t *block =
-      buf_page_get(page_id_t(space_id, 0), page_size, RW_SX_LATCH, &mtr);
+  buf_block_t *block = buf_page_get(page_id_t(space_id, 0), page_size, RW_SX_LATCH, &mtr);
 
   buf_block_dbg_add_level(block, SYNC_FSP_PAGE);
 
@@ -4749,8 +4780,7 @@ dberr_t btr_sdi_create_index(space_id_t space_id, bool dict_locked) {
   ut_ad(fsp_header_get_field(page, FSP_SPACE_FLAGS) == fsp_flags);
 
   fsp_flags_set_sdi(fsp_flags);
-  mlog_write_ulint(FSP_HEADER_OFFSET + FSP_SPACE_FLAGS + page, fsp_flags,
-                   MLOG_4BYTES, &mtr);
+  mlog_write_ulint(FSP_HEADER_OFFSET + FSP_SPACE_FLAGS + page, fsp_flags, MLOG_4BYTES, &mtr);
 
   mtr.commit();
 

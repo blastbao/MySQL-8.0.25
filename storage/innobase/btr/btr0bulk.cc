@@ -778,7 +778,7 @@ void BtrBulk::logFreeCheck() {
 }
 
 /** Constructor
-@param[in]  index   B-tree index
+@param[in]  index     B-tree index
 @param[in]  trx_id    transaction id
 @param[in]  observer  flush observer */
 BtrBulk::BtrBulk(dict_index_t *index, trx_id_t trx_id, FlushObserver *observer)
@@ -1085,15 +1085,13 @@ dberr_t BtrBulk::finish(dberr_t err) {
     page_id_t last_page_id(dict_index_get_space(m_index), last_page_no);
     page_size_t page_size(dict_table_page_size(m_index->table));
     page_no_t root_page_no = dict_index_get_page(m_index);
-    PageBulk root_page_bulk(m_index, m_trx_id, root_page_no, m_root_level,
-                            m_flush_observer);
+    PageBulk root_page_bulk(m_index, m_trx_id, root_page_no, m_root_level, m_flush_observer);
 
     mtr_t mtr;
     mtr_start(&mtr);
     mtr_x_lock(dict_index_get_lock(m_index), &mtr);
 
-    buf_block_t *last_block =
-        btr_block_get(last_page_id, page_size, RW_X_LATCH, m_index, &mtr);
+    buf_block_t *last_block = btr_block_get(last_page_id, page_size, RW_X_LATCH, m_index, &mtr);
     page_t *last_page = buf_block_get_frame(last_block);
 
     /* Copy last page to root page. */

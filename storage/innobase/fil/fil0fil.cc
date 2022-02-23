@@ -2337,7 +2337,10 @@ fil_space_t *fil_space_get(space_id_t space_id) {
 /** Returns the latch of a file space.
 @param[in]	space_id	Tablespace ID
 @return latch protecting storage allocation */
+//
+// 对表空间加锁
 rw_lock_t *fil_space_get_latch(space_id_t space_id) {
+
   auto shard = fil_system->shard_by_id(space_id);
 
   shard->mutex_acquire();

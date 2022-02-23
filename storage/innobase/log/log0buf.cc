@@ -654,14 +654,11 @@ void log_buffer_x_lock_exit(log_t &log) {
 
 /** @{ */
 
-static void log_wait_for_space_after_reserving(log_t &log,
-                                               const Log_handle &handle) {
+static void log_wait_for_space_after_reserving(log_t &log, const Log_handle &handle) {
   ut_ad(rw_lock_own(log.sn_lock_inst, RW_LOCK_S));
 
   const sn_t start_sn = log_translate_lsn_to_sn(handle.start_lsn);
-
   const sn_t end_sn = log_translate_lsn_to_sn(handle.end_lsn);
-
   const sn_t len = end_sn - start_sn;
 
   /* If we had not allowed to resize log buffer, it would have
@@ -751,8 +748,7 @@ static void log_wait_for_space_after_reserving(log_t &log,
     /* We multiply size at least by 1.382 to avoid case
     in which we keep resizing by few bytes only. */
 
-    lsn_t new_lsn_size = log_translate_sn_to_lsn(
-        static_cast<lsn_t>(1.382 * len + OS_FILE_LOG_BLOCK_SIZE));
+    lsn_t new_lsn_size = log_translate_sn_to_lsn(static_cast<lsn_t>(1.382 * len + OS_FILE_LOG_BLOCK_SIZE));
 
     new_lsn_size = ut_uint64_align_up(new_lsn_size, OS_FILE_LOG_BLOCK_SIZE);
 
@@ -814,11 +810,11 @@ void log_wait_for_space_in_log_buf(log_t &log, sn_t end_sn) {
 
   MONITOR_INC_WAIT_STATS(MONITOR_LOG_ON_BUFFER_SPACE_, wait_stats);
 
-  ut_a(end_sn + OS_FILE_LOG_BLOCK_SIZE <=
-       log_translate_lsn_to_sn(log.write_lsn.load()) + buf_size_sn);
+  ut_a(end_sn + OS_FILE_LOG_BLOCK_SIZE <= log_translate_lsn_to_sn(log.write_lsn.load()) + buf_size_sn);
 }
 
 Log_handle log_buffer_reserve(log_t &log, size_t len) {
+
   Log_handle handle;
 
   /* In 5.7, we incremented log_write_requests for each single
@@ -832,15 +828,12 @@ Log_handle log_buffer_reserve(log_t &log, size_t len) {
   srv_stats.log_write_requests.inc();
 
   ut_ad(srv_shutdown_state_matches([](auto state) {
-    return state <= SRV_SHUTDOWN_FLUSH_PHASE ||
-           state == SRV_SHUTDOWN_EXIT_THREADS;
+    return state <= SRV_SHUTDOWN_FLUSH_PHASE || state == SRV_SHUTDOWN_EXIT_THREADS;
   }));
-
   ut_a(len > 0);
 
   /* Reserve space in sequence of data bytes: */
   const sn_t start_sn = log_buffer_s_lock_enter_reserve(log, len);
-
   /* Ensure that redo log has been initialized properly. */
   ut_a(start_sn > 0);
 

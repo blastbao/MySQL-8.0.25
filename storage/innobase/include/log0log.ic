@@ -212,11 +212,16 @@ inline void log_free_check() {
   }
 }
 
+// sn 转换到 lsn
+// 给sn每496B都增加16B的头尾，结果即为对应的lsn
 constexpr inline lsn_t log_translate_sn_to_lsn(lsn_t sn) {
   return (sn / LOG_BLOCK_DATA_SIZE * OS_FILE_LOG_BLOCK_SIZE +
           sn % LOG_BLOCK_DATA_SIZE + LOG_BLOCK_HDR_SIZE);
 }
 
+// lsn 转换到 sn
+// 给lsn每512B都减去16B的头尾，再加上最后一个不完整的Block内偏移，减去
+// 该Block的Header 12B，结果即为对应的sn
 inline lsn_t log_translate_lsn_to_sn(lsn_t lsn) {
   /* Calculate sn of the beginning of log block, which contains
   the provided lsn value. */

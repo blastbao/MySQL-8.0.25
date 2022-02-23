@@ -49,32 +49,25 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "trx0purge.h"
 #endif /* !UNIV_HOTBACKUP */
 
-static_assert(static_cast<int>(MTR_MEMO_PAGE_S_FIX) ==
-                  static_cast<int>(RW_S_LATCH),
-              "");
+static_assert(static_cast<int>(MTR_MEMO_PAGE_S_FIX) == static_cast<int>(RW_S_LATCH), "");
 
-static_assert(static_cast<int>(MTR_MEMO_PAGE_X_FIX) ==
-                  static_cast<int>(RW_X_LATCH),
-              "");
+static_assert(static_cast<int>(MTR_MEMO_PAGE_X_FIX) == static_cast<int>(RW_X_LATCH), "");
 
-static_assert(static_cast<int>(MTR_MEMO_PAGE_SX_FIX) ==
-                  static_cast<int>(RW_SX_LATCH),
-              "");
+static_assert(static_cast<int>(MTR_MEMO_PAGE_SX_FIX) == static_cast<int>(RW_SX_LATCH), "");
 
 /** Iterate over a memo block in reverse. */
 template <typename Functor>
 struct Iterate {
+
   /** Release specific object */
-  explicit Iterate(Functor &functor) : m_functor(functor) { /* Do nothing */
+  explicit Iterate(Functor &functor) : m_functor(functor) {
+    /* Do nothing */
   }
 
   /** @return false if the functor returns false. */
   bool operator()(mtr_buf_t::block_t *block) {
-    const mtr_memo_slot_t *start =
-        reinterpret_cast<const mtr_memo_slot_t *>(block->begin());
-
+    const mtr_memo_slot_t *start = reinterpret_cast<const mtr_memo_slot_t *>(block->begin());
     mtr_memo_slot_t *slot = reinterpret_cast<mtr_memo_slot_t *>(block->end());
-
     ut_ad(!(block->used() % sizeof(*slot)));
 
     while (slot-- != start) {
@@ -92,8 +85,7 @@ struct Iterate {
 /** Find specific object */
 struct Find {
   /** Constructor */
-  Find(const void *object, ulint type)
-      : m_slot(), m_type(type), m_object(object) {
+  Find(const void *object, ulint type): m_slot(), m_type(type), m_object(object) {
     ut_a(object != nullptr);
   }
 
@@ -644,10 +636,30 @@ void mtr_t::Command::release_resources() {
 }
 
 /** Commit a mini-transaction. */
+
+
+// mtr_commit 时会将 mtr 中的 mlog 和 mblock（dirty page）分别拷贝到 logbuffer 和 flushlist 中。
+// 在真实事务提交时，会将该事务涉及的所有 mlog 刷盘，这样各个原子变更就持久化了。
+// 恢复的时候按照类型(mtr_type_t)调用相应的回调函数，恢复 page 。
+//
+// InnoDB存储引擎在内存中维护了一个全局的Redo Log Buffer用以缓存对Redo Log的修改，
+// mtr在提交的时候，会将mtr执行过程中产生的本地日志copy到全局Redo Log Buffer中，
+// 并将mtr执行过程中修改的数据页（被称做脏页dirty page）加入到一个全局的队列中flush list。
+//
+// InnoDB存储引擎会根据不同的策略将Redo Log Buffer中的日志落盘，或将flush list中的脏页刷盘并推进Checkpoint。
+//
+// 在脏页落盘以及Checkpoint推进的过程中，需要严格保证Redo日志先落盘再刷脏页的顺序，
+// 在MySQL 8之前，InnoDB存储引擎严格的保证MTR写入Redo Log Buffer的顺序是按照LSN递增的顺序，
+// 以及flush list中的脏页按LSN递增顺序排序。
+//
+// 在多线程并发写入Redo Log Buffer及flush list时，这一约束是通过两个全局锁log_sys_t::mutex和log_sys_t::flush_order_mutex实现的。
+
 void mtr_t::commit() {
   ut_ad(is_active());
   ut_ad(!is_inside_ibuf());
   ut_ad(m_impl.m_magic_n == MTR_MAGIC_N);
+
+  // 设置状态
   m_impl.m_state = MTR_STATE_COMMITTING;
 
   DBUG_EXECUTE_IF("mtr_commit_crash", DBUG_SUICIDE(););
@@ -657,18 +669,19 @@ void mtr_t::commit() {
   if (m_impl.m_n_log_recs > 0 ||
       (m_impl.m_modifications && m_impl.m_log_mode == MTR_LOG_NO_REDO)) {
     ut_ad(!srv_read_only_mode || m_impl.m_log_mode == MTR_LOG_NO_REDO);
-
     cmd.execute();
   } else {
     cmd.release_all();
     cmd.release_resources();
   }
+
 #ifndef UNIV_HOTBACKUP
   check_nolog_and_unmark();
 #endif /* !UNIV_HOTBACKUP */
 
   ut_d(remove_from_debug_list());
 }
+
 
 #ifdef UNIV_DEBUG
 void mtr_t::remove_from_debug_list() const {
@@ -826,44 +839,58 @@ void mtr_t::Command::add_dirty_blocks_to_flush_list(lsn_t start_lsn,
   m_impl->m_memo.for_each_block_in_reverse(iterator);
 }
 
-/** Write the redo log record, add dirty pages to the flush list and release
-the resources. */
+/** Write the redo log record, add dirty pages to the flush list and release the resources. */
+
+// mtr_commit 时会将 mtr 中的 mlog 和 mblock（dirty page）分别拷贝到 logbuffer 和 flushlist 中。
+// 在真实事务提交时，会将该事务涉及的所有 mlog 刷盘，这样各个原子变更就持久化了。
+// 恢复的时候按照类型(mtr_type_t)调用相应的回调函数，恢复 page 。
+
+
 void mtr_t::Command::execute() {
   ut_ad(m_impl->m_log_mode != MTR_LOG_NONE);
 
 #ifndef UNIV_HOTBACKUP
+
+  // 获取 redo log 的大小
   ulint len = prepare_write();
 
   if (len > 0) {
+
     mtr_write_log_t write_log;
 
     write_log.m_left_to_write = len;
 
+    // 为 redo log 在全局的 redo log buffer 中分配空间
     auto handle = log_buffer_reserve(*log_sys, len);
 
     write_log.m_handle = handle;
     write_log.m_lsn = handle.start_lsn;
 
+    // 对每个 block 执行真正的 copy 操作，将 redo log copy 到 redo log buffer 中
     m_impl->m_log.for_each_block(write_log);
 
     ut_ad(write_log.m_left_to_write == 0);
     ut_ad(write_log.m_lsn == handle.end_lsn);
 
+    // 等待 flush list 中的无序度降到阈值以内 recent_closed.has_space(start_lsn)
     log_wait_for_space_in_log_recent_closed(*log_sys, handle.start_lsn);
 
     DEBUG_SYNC_C("mtr_redo_before_add_dirty_blocks");
 
+    // 把脏页 dirty_blocks 拷贝到 flush list 中
     add_dirty_blocks_to_flush_list(handle.start_lsn, handle.end_lsn);
 
+    // 更新脏页的刷入信息 recent_closed.add_link(start_lsn, end_lsn)
     log_buffer_close(*log_sys, handle);
 
     m_impl->m_mtr->m_commit_lsn = handle.end_lsn;
 
   } else {
-    DEBUG_SYNC_C("mtr_noredo_before_add_dirty_blocks");
 
+    DEBUG_SYNC_C("mtr_noredo_before_add_dirty_blocks");
     add_dirty_blocks_to_flush_list(0, 0);
   }
+
 #endif /* !UNIV_HOTBACKUP */
 
   release_all();

@@ -51,31 +51,61 @@ typedef byte page_header_t;
   FSEG_PAGE_DATA /* index page header starts at this \
          offset */
 /*-----------------------------*/
+
+/*page directory拥有的slot个数*/
 #define PAGE_N_DIR_SLOTS 0 /* number of slots in page directory */
+
+/*heap中空闲位置的偏移量*/
 #define PAGE_HEAP_TOP 2    /* pointer to record heap top */
+
+/*heap中的记录数,所有分配出去的记录数，free rec + PAGE_N_RECS + 2*/
 #define PAGE_N_HEAP                                      \
   4                    /* number of records in the heap, \
                        bit 15=flag: new-style compact page format */
+
+/*指向page中空闲空间的偏移量*/
 #define PAGE_FREE 6    /* pointer to start of page free record list */
+
+/*已删除的记录字节数,用于重分配*/
 #define PAGE_GARBAGE 8 /* number of bytes in deleted records */
+
+/*最后插入记录的位置*/
 #define PAGE_LAST_INSERT                                                \
   10                      /* pointer to the last inserted record, or    \
                           NULL if this info has been reset by a delete, \
                           for example */
+
+/*记录的操作方向,
+ PAGE_LEFT PAGE_RIGHT
+ PAGE_SAME_REC
+ PAGE_SAME_PAGE
+ PAGE_NO_DIRECTION
+*/
 #define PAGE_DIRECTION 12 /* last insert direction: PAGE_LEFT, ... */
+
+/*同一方向连续插入的记录数*/
 #define PAGE_N_DIRECTION                                            \
   14                   /* number of consecutive inserts to the same \
                        direction */
+
+/*页中存在的记录数，不包括infimum和supremum*/
 #define PAGE_N_RECS 16 /* number of user records on the page */
+
+/*修改当前页最大的事务ID*/
 #define PAGE_MAX_TRX_ID                             \
   18 /* highest id of a trx which may have modified \
      a record on the page; trx_id_t; defined only   \
      in secondary indexes and in the insert buffer  \
      tree */
+
+
 #define PAGE_HEADER_PRIV_END                      \
   26 /* end of private data structure of the page \
      header which are set in a page create */
+
 /*----*/
+
+/*当前页在索引树的层位置*/
 #define PAGE_LEVEL                                 \
   26 /* level of the node in an index tree; the    \
      leaf level is the level 0.  This field should \
@@ -85,10 +115,14 @@ typedef byte page_header_t;
      This field should not be written to after \
      page creation. */
 
+ /*B+树叶子节点所在段的segment header信息*/
 #define PAGE_BTR_SEG_LEAF                         \
   36 /* file segment header for the leaf pages in \
      a B-tree: defined only on the root page of a \
      B-tree, but not in the root of an ibuf tree */
+
+
+
 #define PAGE_BTR_IBUF_FREE_LIST PAGE_BTR_SEG_LEAF
 #define PAGE_BTR_IBUF_FREE_LIST_NODE PAGE_BTR_SEG_LEAF
 /* in the place of PAGE_BTR_SEG_LEAF and _TOP
@@ -96,6 +130,8 @@ there is a free list base node if the page is
 the root page of an ibuf tree, and at the same
 place is the free list node if the page is in
 a free list */
+
+/*B+树非叶子节点所在段的segment header信息*/
 #define PAGE_BTR_SEG_TOP (36 + FSEG_HEADER_SIZE)
 /* file segment header for the non-leaf pages
 in a B-tree: defined only on the root page of

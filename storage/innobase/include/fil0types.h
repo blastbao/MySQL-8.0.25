@@ -42,11 +42,13 @@ versions the 'new' checksum of the page */
 #define FIL_PAGE_SPACE_OR_CHKSUM 0
 
 /** page offset inside space */
+///  page no，一般是在表空间的物理偏移量
 #define FIL_PAGE_OFFSET 4
 
 /** if there is a 'natural' predecessor of the page, its offset.
 Otherwise FIL_NULL. This field is not set on BLOB pages, which are stored as a
 singly-linked list. See also FIL_PAGE_NEXT. */
+/// 前一页的page no (B+tree的叶子节点是通过链表串起来的，有前后关系)
 #define FIL_PAGE_PREV 8
 
 /** On page 0 of the tablespace, this is the server version ID */
@@ -57,12 +59,14 @@ FIL_NULL. B-tree index pages(FIL_PAGE_TYPE contains FIL_PAGE_INDEX) on the
 same PAGE_LEVEL are maintained as a doubly linked list via FIL_PAGE_PREV and
 FIL_PAGE_NEXT in the collation order of the smallest user record on each
 page. */
+/// 后一页的page no
 #define FIL_PAGE_NEXT 12
 
 /** On page 0 of the tablespace, this is the server version ID */
 #define FIL_PAGE_SPACE_VERSION 12
 
 /** lsn of the end of the newest modification log record to the page */
+///  更改记录时最大的redo log lsn，一般用在redo log恢复时使用
 #define FIL_PAGE_LSN 16
 
 /** file page type: FIL_PAGE_INDEX,..., 2 bytes. The contents of this field
@@ -72,11 +76,13 @@ The opposite does not hold.
 
 In tablespaces created by MySQL/InnoDB 5.1.7 or later, the contents of this
 field is valid for all uncompressed pages. */
+/// page的类型
 #define FIL_PAGE_TYPE 24
 
 /** this is only defined for the first page of the system tablespace: the file
 has been flushed to disk at least up to this LSN. For FIL_PAGE_COMPRESSED
 pages, we store the compressed page control information in these 8 bytes. */
+/// space文件最后被flush是的redo log lsn,这个值只会在space的第一个页中被设置
 #define FIL_PAGE_FILE_FLUSH_LSN 26
 
 /** If page type is FIL_PAGE_COMPRESSED then the 8 bytes starting at
@@ -162,8 +168,7 @@ Fil_page_header.
 @param[in]  out      the output stream.
 @param[in]  header   an object of type Fil_page_header.
 @return the output stream. */
-inline std::ostream &operator<<(std::ostream &out,
-                                const Fil_page_header &header) noexcept {
+inline std::ostream &operator<<(std::ostream &out, const Fil_page_header &header) noexcept {
   return (header.print(out));
 }
 
