@@ -608,6 +608,8 @@ static bool btr_cur_need_opposite_intention(const page_t *page,
  search tuple should be performed in the B-tree. InnoDB does an insert
  immediately after the cursor. Thus, the cursor may end up on a user record,
  or on a page infimum record. */
+
+// 主要作用是将 cursor 移动到索引上待插入的位置，不展开看。
 void btr_cur_search_to_nth_level(
     dict_index_t *index,   /*!< in: index */
     ulint level,           /*!< in: the tree level of search */
@@ -857,7 +859,10 @@ void btr_cur_search_to_nth_level(
           BTR_ALREADY_S_LATCHED */
           ut_ad(latch_mode != BTR_SEARCH_TREE);
 
+          // 不管插入还是更新操作，都是先以乐观方式进行，因此先加索引 S 锁。
+          // 如果以悲观方式插入记录，意味着可能产生索引分裂，在 5.7 之前会加索引 X 锁，而5.7版本则会加 SX 锁（但某些情况下也会退化成X锁）
           mtr_s_lock(dict_index_get_lock(index), mtr);
+
         } else {
           /* BTR_MODIFY_EXTERNAL needs to be excluded */
           mtr_sx_lock(dict_index_get_lock(index), mtr);
@@ -2923,6 +2928,22 @@ dberr_t btr_cur_optimistic_insert(
  made on the leaf level, to avoid deadlocks, mtr must also own x-latches
  to brothers of page, if those brothers exist.
  @return DB_SUCCESS or error number */
+
+// [页面分裂全程在 mtr 中执行]
+//
+//   |--> btr_cur_pessimistic_insert
+//   |    |    |--> //file extend for more page
+//   |    |    |--> fsp_reserve_free_extents
+//   |    |    |    |--> fil_space_extend
+//   |    |    |    |--> fsp_header_size_update
+//   |    |    |    |    |--> //记录新的page数量
+//   |    |    |    |    |--> //ps. 先给文件扩容，再记录元数据信息
+//   |    |    |    |    |--> MLOG_4BYTES
+//   |    |-->//root页面分裂
+//   |    |--> btr_root_raise_and_insert
+//   |    |-->//普通页面分裂
+//   |    |--> btr_page_split_and_insert
+
 dberr_t btr_cur_pessimistic_insert(
     uint32_t flags,      /*!< in: undo logging and locking flags: if not
                          zero, the parameter thr should be

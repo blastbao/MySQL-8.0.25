@@ -2331,6 +2331,77 @@ static void row_ins_temp_prebuilt_tree_modified(dict_table_t *table) {
  @retval DB_LOCK_WAIT on lock wait when !(flags & BTR_NO_LOCKING_FLAG)
  @retval DB_FAIL if retry with BTR_MODIFY_TREE is needed
  @return error code */
+
+// [插入-执行阶段]
+// 此函数会打开 cursor ，定位到插入的 page ，由 btr_cur_optimistic_insert 执行正在的插入。
+//   |--> row_ins_clust_index_entry_low
+//   |    |--> // mtr_1 贯穿整条insert语句
+//   |    |--> mtr_start(mtr_1);
+//   |    |--> btr_pcur_t::open
+//   |    |    |--> btr_cur_search_to_nth_level
+//   |    |    |    |--> //对index加s锁
+//   |    |    |    |--> mtr_s_lock(dict_index_get_lock(index), mtr_1);
+//   |    |    |    |--> buf_page_get_gen
+//   |    |    |    |    |--> mtr_add_page(block);
+//   |    |    |    |    |    |--> //Pushes an object to an mtr memo stack.
+//   |    |    |    |    |    |--> mtr_memo_push(mtr_1, block, fix_type);
+//   |    |--> btr_cur_optimistic_insert(mtr_1)
+//   |    |    |--> rec_get_converted_size//计算物理记录的大小
+//   |    |    |--> btr_cur_get_page_cur
+//   |    |    |--> //完成与lock 和 undo 有关的操作,并且赋值roll_ptr给filed
+//   |    |    |--> btr_cur_ins_lock_and_undo
+//   |    |    |    |--> //写undo记录
+//   |    |    |    |--> trx_undo_report_row_operation
+//   |    |    |    |    |--> // mtr_2 用于记录 undo log
+//   |    |    |    |    |--> mtr_start(mtr_2)
+//   |    |    |    |    |--> //分配undo空间
+//   |    |    |    |    |--> trx_undo_assign_undo
+//   |    |    |    |    |    |--> //mtr_3 分配或复用一个 undo log
+//   |    |    |    |    |    |--> mtr_start(mtr_3)
+//   |    |    |    |    |    |--> //这里先尝试复用，如果复用失败，则分配新的 undo log
+//   |    |    |    |    |    |--> trx_undo_reuse_cached
+//   |    |    |    |    |    |    |--> trx_undo_page_get
+//   |    |    |    |    |    |    |    |--> //对复用（也可能是分配）的 undo log page 加 RW_X_LATCH 入栈
+//   |    |    |    |    |    |    |    |--> mtr_memo_push(mtr_3)
+//   |    |    |    |    |    |    |--> //写undo log header
+//   |    |    |    |    |    |    |--> if(type == TRX_UNDO_INSERT)
+//   |    |    |    |    |    |    |--> //insert的undo页在提交的时候就没有用了,只是在insert事务回滚的时候才用上;
+//   |    |    |    |    |    |    |--> //所以，insert的undo分配每次都是重用之前的cache，只是修改头部数据即可
+//   |    |    |    |    |    |    |--> trx_undo_insert_header_reuse(mtr_3)
+//   |    |    |    |    |    |    |    |--> /* Write the log record MLOG_UNDO_HDR_REUSE */
+//   |    |    |    |    |    |    |    |--> trx_undo_insert_header_reuse_log(mtr_3)
+//   |    |    |    |    |    |    |    |    |--> mlog_write_initial_log_record(undo_page, MLOG_UNDO_HDR_REUSE, mtr_3);
+//   |    |    |    |    |    |    |--> else
+//   |    |    |    |    |    |    |--> //而update就是需要创建一个undopage header文件块
+//   |    |    |    |    |    |    |--> trx_undo_header_create(undo_page, trx_id, mtr_3);
+//   |    |    |    |    |    |    |--> endif
+//   |    |    |    |    |    |    |--> //在undo header 中预留 XID 空间
+//   |    |    |    |    |    |    |--> trx_undo_header_add_space_for_xid(mtr_3)
+//   |    |    |    |    |    |    |    |--> mlog_write_ulint(MLOG_2BYTES)
+//   |    |    |    |    |    |    |    |--> mlog_write_ulint(MLOG_2BYTES)
+//   |    |    |    |    |    |    |    |--> mlog_write_ulint(MLOG_2BYTES)
+//   |    |    |    |    |    |--> //提交 mtr_3
+//   |    |    |    |    |    |--> mtr_commit(mtr_3)
+//   |    |    |    |    |--> buf_page_get_gen
+//   |    |    |    |    |    |--> //即将写入的 undo log page 加 RW_X_LATCH 入栈
+//   |    |    |    |    |    |--> mtr_memo_push(mtr_2)
+//   |    |    |    |    |--> //undo log 记录 insert 操作
+//   |    |    |    |    |--> trx_undo_page_report_insert(mtr_2)
+//   |    |    |    |    |    |--> trx_undo_page_set_next_prev_and_add(mtr_2)
+//   |    |    |    |    |    |    |--> trx_undof_page_add_undo_rec_log(mtr_2)
+//   |    |    |    |    |    |    |    |--> //MLOG_UNDO_INSERT：在redo中，写入一条undo相关redo记录
+//   |    |    |    |    |    |    |    |--> mlog_write_initial_log_record_fast(undo_page,MLOG_UNDO_INSERT,log_ptr,mtr_2);
+//   |    |    |    |    |--> //提交 mtr_2
+//   |    |    |    |    |--> mtr_commit(mtr_2)
+//   |    |    |--> //执行插入逻辑
+//   |    |    |--> page_cur_tuple_insert
+//   |    |    |    |--> page_cur_insert_rec_low
+//   |    |    |    |    |--> //记录此次 INSERT 的 redo 日志
+//   |    |    |    |    |--> page_cur_insert_rec_write_log(mtr_1)
+//   |    |    |    |    |    |--> mlog_open_and_write_index(insert_rec,MLOG_COMP_REC_INSERT,log_ptr,mtr)
+//   |    |--> //提交 mtr_1
+//   |    |--> mtr_commit(mtr_1);
+//
 dberr_t row_ins_clust_index_entry_low(
     uint32_t flags,      /*!< in: undo logging and locking flags */
     ulint mode,          /*!< in: BTR_MODIFY_LEAF or BTR_MODIFY_TREE,
@@ -2405,6 +2476,12 @@ and return. don't execute actual insert. */
   /* Note that we use PAGE_CUR_LE as the search mode, because then
   the function will return in both low_match and up_match of the
   cursor sensible values */
+  //
+  // btr_pcur_open 方法，获取到这个新生成的 index 到底放到 btree 的哪个位置，这个位置由 Cursor *pcur 来标记。
+  //
+  // 因为 btr 是会分裂和变动的，当 btr 被分裂时，cursor 的位置也会对应的进行变化。
+  // 因此，通过一层 pcur 的封装，将 cursor 的变化对外屏蔽。
+  // 针对一个 index ，我们只需要通过一个固定的 pcur 去获取当前的 cursor 就可以了。
   btr_pcur_open(index, entry, PAGE_CUR_LE, mode, &pcur, &mtr);
   cursor = btr_pcur_get_btr_cur(&pcur);
   cursor->thr = thr;
@@ -2414,6 +2491,8 @@ and return. don't execute actual insert. */
 
 #ifdef UNIV_DEBUG
   {
+
+    // 获取到了真实的 cursor 后，就可以拿到对应的 leaf 节点，就是具体的 page 。
     page_t *page = btr_cur_get_page(cursor);
     rec_t *first_rec = page_rec_get_next(page_get_infimum_rec(page));
 
@@ -2791,6 +2870,7 @@ dberr_t row_ins_sec_index_entry_low(uint32_t flags, ulint mode,
   cursor.rtr_info = nullptr;
   ut_ad(thr_get_trx(thr)->id != 0 || index->table->is_intrinsic());
 
+  // 开启 mtr
   mtr_start(&mtr);
 
   if (index->table->is_temporary()) {

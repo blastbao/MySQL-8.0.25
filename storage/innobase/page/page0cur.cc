@@ -849,7 +849,42 @@ void page_cur_open_on_rnd_user_rec(buf_block_t *block, /*!< in: page */
   } while (rnd--);
 }
 
+
+// 在插入数据过程中，包含大量的 redo 写 cache 逻辑，
+// 例如更新二级索引页的 max trx id、写 undo log 产生的 redo(嵌套另外一个mtr)、修改数据页产生的日志。
+// 这里我们只讨论修改数据页产生的日志。
+//
+//
+
 /** Writes the log record of a record insert on a page. */
+//
+// 修改数据页产生的日志
+//
+//   Step 1: 调用函数 mlog_open_and_write_index 记录索引相关信息
+//   Step 2: 写入记录在 page 上的偏移量，占两个字节
+//              mach_write_to_2(log_ptr, page_offset(cursor_rec));
+//   Step 3: 写入记录其它相关信息（rec size, extra size, info bit，关于 InnoDB 的数据文件物理描述，参见淘宝数据库月报）
+//   Step 4: 将插入的记录拷贝到redo文件，同时关闭mlog
+//              memcpy(log_ptr, ins_ptr, rec_size);
+//              mlog_close(mtr, log_ptr + rec_size);
+//
+// 通过上述流程，我们写入了一个类型为 MLOG_COMP_REC_INSERT 的日志记录。
+// 由于特定类型的记录都基于约定的格式，在崩溃恢复时也可以基于这样的约定解析出日志。
+//
+// 更多的 redo log 记录类型参见 enum mlog_id_t ，源码在 innobase/include/mtr0types.h 中。
+// 在这个过程中产生的 redo log 都记录在 mtr.m_impl.m_log 中，只有显式提交 mtr 时，才会写到公共 buffer 中。
+// 当提交一个 mtr 时，需要将对数据的更改记录提交到公共 buffer 中，并将对应的脏页加到 flush list 上。
+//
+//
+// 关键函数：
+//  mlog_open_and_write_index                               记录索引相关信息
+//  mach_write_to_2(log_ptr, page_offset(cursor_rec));      写入记录在 page 上的偏移量，占两个字节
+//  mach_write_compressed                                   处理 rec_size 、extra_size；
+//  memcpy(log_ptr, ins_ptr, rec_size);                     将插入的记录拷贝到 redo 文件
+//  mlog_close(mtr, log_ptr + rec_size);                    关闭 mlog
+//
+//
+//
 static void page_cur_insert_rec_write_log(
     rec_t *insert_rec,   /*!< in: inserted physical record */
     ulint rec_size,      /*!< in: insert_rec size */

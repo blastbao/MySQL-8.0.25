@@ -122,9 +122,9 @@ enum class log_state_t {
 /** The recovery implementation. */
 struct redo_recover_t;
 
+// 保存 mtr 关联的 redo log 序号，start_lsn 表示当前 mtr 的起始 lsn ，end_lsn 表示当前 mtr 的结束lsn 。
 struct Log_handle {
   lsn_t start_lsn;
-
   lsn_t end_lsn;
 };
 
@@ -167,6 +167,7 @@ struct alignas(ut::INNODB_CACHE_LINE_SIZE) log_t {
   alignas(ut::INNODB_CACHE_LINE_SIZE) atomic_sn_t sn;
 
   /** Intended sn value while x-locked. */
+  /* 当前 redo log 的 sn. */
   atomic_sn_t sn_locked;
 
   /** Mutex which can be used for x-lock sn value */
@@ -181,6 +182,7 @@ struct alignas(ut::INNODB_CACHE_LINE_SIZE) log_t {
       operations will be aligned to sector size, which is required e.g. on
       Windows when doing unbuffered file access.
       Protected by: locking sn not to add. */
+      /* redo log buffer 的内存区 */
       aligned_array_pointer<byte, OS_FILE_LOG_BLOCK_SIZE> buf;
 
   /** Size of the log buffer expressed in number of data bytes,
@@ -189,12 +191,14 @@ struct alignas(ut::INNODB_CACHE_LINE_SIZE) log_t {
 
   /** Size of the log buffer expressed in number of total bytes,
   that is including bytes for headers and footers of log blocks. */
+  /* redo log buffer 缓冲区的大小，通过 innodb-log-buffer-size 变量指定 */
   size_t buf_size;
 
   alignas(ut::INNODB_CACHE_LINE_SIZE)
 
       /** The recent written buffer.
       Protected by: locking sn not to add. */
+      /* 解决并发插入 redo log buffer 后刷入 ib_logfile 存在空洞的问题. */
       Link_buf<lsn_t> recent_written;
 
   /** Used for pausing the log writer threads.
@@ -211,6 +215,7 @@ struct alignas(ut::INNODB_CACHE_LINE_SIZE) log_t {
 
       /** The recent closed buffer.
       Protected by: locking sn not to add. */
+      /* 解决并发插入 flush_list 后确认安全的 checkpoint_lsn 的问题. */
       Link_buf<lsn_t> recent_closed;
 
   alignas(ut::INNODB_CACHE_LINE_SIZE)
@@ -239,7 +244,9 @@ struct alignas(ut::INNODB_CACHE_LINE_SIZE) log_t {
   /*
   @see @ref subsect_redo_log_write_lsn */
   MY_COMPILER_DIAGNOSTIC_POP()
-  alignas(ut::INNODB_CACHE_LINE_SIZE) atomic_lsn_t write_lsn;
+  alignas(ut::INNODB_CACHE_LINE_SIZE)
+      /* write_lsn 之前的数据已经写入系统的 Page Cache, 但不保证已经Flush. */
+      atomic_lsn_t write_lsn;
 
   alignas(ut::INNODB_CACHE_LINE_SIZE)
 
@@ -302,6 +309,7 @@ struct alignas(ut::INNODB_CACHE_LINE_SIZE) log_t {
   alignas(ut::INNODB_CACHE_LINE_SIZE)
 
       /** Up to this lsn data has been flushed to disk (fsynced). */
+      /* 已经被 flush 到磁盘的 redo log LSN. */
       atomic_lsn_t flushed_to_disk_lsn;
 
   /** Padding after the frequently updated flushed_to_disk_lsn. */
@@ -352,6 +360,7 @@ struct alignas(ut::INNODB_CACHE_LINE_SIZE) log_t {
       space_id_t files_space_id;
 
   /** Size of buffer used for the write-ahead (in bytes). */
+  /* write ahead 的 buffer 大小. */
   uint32_t write_ahead_buf_size;
 
   /** Aligned pointer to buffer used for the write-ahead. It is aligned to
@@ -367,26 +376,28 @@ struct alignas(ut::INNODB_CACHE_LINE_SIZE) log_t {
 #endif /* !UNIV_HOTBACKUP */
 
   /** Some lsn value within the current log file. */
+  /* 当前 redo log 文件的 LSN 位置. */
   lsn_t current_file_lsn;
 
   /** File offset for the current_file_lsn. */
+  /* 当前 ib_logfile 文件写入的 offset. */
   uint64_t current_file_real_offset;
 
   /** Up to this file offset we are within the same current log file. */
+  /* 当前 ib_logfile 文件末尾的 offset. */
   uint64_t current_file_end_offset;
 
   /** Number of performed IO operations (only for printing stats). */
   uint64_t n_log_ios;
 
-  /** Size of each single log file (expressed in bytes, including
-  file header). */
+  /** Size of each single log file (expressed in bytes, including file header). */
+  /* 当前 ib_logfile 的文件大小. */
   uint64_t file_size;
 
   /** Number of log files. */
   uint32_t n_files;
 
-  /** Total capacity of all the log files (file_size * n_files),
-  including headers of the log files. */
+  /** Total capacity of all the log files (file_size * n_files), including headers of the log files. */
   uint64_t files_real_capacity;
 
   /** Capacity of redo log files for log writer thread. The log writer
@@ -593,6 +604,7 @@ struct alignas(ut::INNODB_CACHE_LINE_SIZE) log_t {
   /**
   @see @ref subsect_redo_log_available_for_checkpoint_lsn */
   MY_COMPILER_DIAGNOSTIC_POP()
+  /* 在此 LSN 之前的所有被添加到 Buffer Pool 的 Flush List 的数据 Page 已经被 flush , 下一次 checkpoint 可以打在这个 LSN. */
   lsn_t available_for_checkpoint_lsn;
 
   /** When this is larger than the latest checkpoint, the log checkpointer
@@ -601,6 +613,7 @@ struct alignas(ut::INNODB_CACHE_LINE_SIZE) log_t {
   Read by: log_checkpointer
   Updated by: user threads (log_free_check() or for sharp checkpoint)
   Protected by: limits_mutex. */
+  /* 当前要求进行 checkpoint 的 lsn. */
   lsn_t requested_checkpoint_lsn;
 
   /** Maximum lsn allowed for checkpoint by dict_persist or zero.
@@ -678,6 +691,7 @@ struct alignas(ut::INNODB_CACHE_LINE_SIZE) log_t {
   /**
   @see @ref subsect_redo_log_last_checkpoint_lsn */
   MY_COMPILER_DIAGNOSTIC_POP()
+  /* 当前的 checkpoint 的 lsn. */
   atomic_lsn_t last_checkpoint_lsn;
 
   /** Next checkpoint number.

@@ -791,10 +791,13 @@ void log_wait_for_space_in_log_buf(log_t &log, sn_t end_sn) {
   lsn_t lsn;
   Wait_stats wait_stats;
 
+  /* 当前已经写入文件的 sn. */
   const sn_t write_sn = log_translate_lsn_to_sn(log.write_lsn.load());
 
   LOG_SYNC_POINT("log_wait_for_space_in_buf_middle");
 
+
+  /* redo log buffer 的长度转换为 sn 后的长度. (去掉 Header 和 tailer ). */
   const sn_t buf_size_sn = log.buf_size_sn.load();
 
   if (end_sn + OS_FILE_LOG_BLOCK_SIZE <= write_sn + buf_size_sn) {
@@ -806,6 +809,7 @@ void log_wait_for_space_in_log_buf(log_t &log, sn_t end_sn) {
 
   lsn = log_translate_sn_to_lsn(end_sn + OS_FILE_LOG_BLOCK_SIZE - buf_size_sn);
 
+  /* 等待 lsn 之前的 redo log 被写入. */
   wait_stats = log_write_up_to(log, lsn, false);
 
   MONITOR_INC_WAIT_STATS(MONITOR_LOG_ON_BUFFER_SPACE_, wait_stats);
@@ -813,8 +817,53 @@ void log_wait_for_space_in_log_buf(log_t &log, sn_t end_sn) {
   ut_a(end_sn + OS_FILE_LOG_BLOCK_SIZE <= log_translate_lsn_to_sn(log.write_lsn.load()) + buf_size_sn);
 }
 
+//
+// log_buffer_reserve 执行过程：
+//
+// 1. 自增 log_sys 中的全局 sn , 由 sn_lock 锁保护. sn 是一个全局维护的递增序列号, 具体含义是不包括 redo log Block 头部和尾部的序列号.
+//
+// 2. 获得 handler，计算写入 redo log 的 start_lsn 和 end_lsn，即实际写入的数据大小,
+//    lsn 代表包括 LOG_BLOCK_HDR_SIZE 和 LOG_BLOCK_TRL_SIZE 的 redo log 序号, 而 sn 仅考虑 redo log 数据内容部分.
+//
+//    sn 和 lsn 转换关系如下:
+//        constexpr inline lsn_t log_translate_sn_to_lsn(lsn_t sn) {
+//            return (sn / LOG_BLOCK_DATA_SIZE * OS_FILE_LOG_BLOCK_SIZE + sn % LOG_BLOCK_DATA_SIZE + LOG_BLOCK_HDR_SIZE);
+//        }
+//
+//    [重要]
+//    sn 和 lsn 的区别是在于数据写入到 redo log 的时候，redo log 是按照 block 来写的，而每一个 block 都会有 header 和 footer ，
+//    因此这里 sn 是写入者看到的 lsn ，而 lsn 则是在磁盘上的真正的 lsn .
+//
+//
+// 3. 假如需要扩展 redo log buffer 的空间长度, 即 end_lsn 大于 sn_limit_for_end .
+//   log_wait_for_space_after_reserving() 会进行扩展以及一系列的参数检查.
+//
+// 4. 因为全局的 redo log buffer 是环形的，假如待写的 redo log 长度超过了目前 redo log buffer 的剩余空闲长度则会出现回环后的覆盖写的问题，
+//    所以需要 log_wait_for_space_in_log_buf(log, start_sn) 触发写入部分长度的 redo log, 以确保这条 redo log 能完整的写入 redo log buffer，
+//    而且回环后不会覆盖尚未写入磁盘的 redo log.
+//
+// 5. 这里可能会和 redo log buffer 允许空洞产生歧义，需要注意的是 redo log buffer 允许的空洞是 write_lsn 之后的 redo log buffer 允许空洞，
+//    现在的情况是因为一条 redo log 的长度超过了 redo log buffer 的剩余长度需要回环，所以在此之前的 redo log 必须保证写入完成.
+//
+// 6. log_write_up_to() 需要 wait 在 log_t 中的 write_events.
+//    当 log.write_lsn.load() >= lsn, 即对应于 redo log buffer 中的 slot 的 redo log 已经完成了写入并被唤醒.
+//
+// 7. 对于长度大于当前整个 redo log buffer 的 redo log, 需要调用 log_buffer_resize_low()来 Resize 设置 redo log buffer 的长度,
+//    过程是释放旧长度的 redo log buffer 空间，重新分配新长度的 redo log buffer 空间，并且重新拷贝 redo log 内容.
+//
+// 8. 对 m_log 中的每一个 512 字节的 Block 调用 mtr_write_log_t()（需要注意的是 mtr_write_log_t() 是运算符 () 的重载)
+//    - log_buffer_write() 使用 memcpy() 写 redo log buffer .
+//    - log_buffer_write_completed() 更新 log_t 中的 recent_written ，即 (start_lsn, end_lsn) 组成的 list .
+//
+// 9. 调用 add_dirty_blocks_to_flush_list() 将产生的脏页 dirty page 插入 Buffer Pool 中的 flush_list .
+//
 Log_handle log_buffer_reserve(log_t &log, size_t len) {
 
+  // Log_handle 保存 mtr 关联的 redo log 序号。
+  //     struct Log_handle {
+  //       lsn_t start_lsn;
+  //       lsn_t end_lsn;
+  //     };
   Log_handle handle;
 
   /* In 5.7, we incremented log_write_requests for each single
@@ -873,11 +922,20 @@ Log_handle log_buffer_reserve(log_t &log, size_t len) {
  *******************************************************/
 
 /** @{ */
-
-lsn_t log_buffer_write(log_t &log, const Log_handle &handle, const byte *str,
-                       size_t str_len, lsn_t start_lsn) {
+//
+//
+// log_buffer_write 主要是写入到 redo log buffer (log->buf).
+//
+// 步骤:
+//   这里首先根据 start_lsn (也就是前一次写入之后的lsn)，来计算当前的 redo log block 的偏移(也就是上一次写入之后的可写位置).
+//   然后得到当前的 block 剩余的大小
+//   如果当前 block 可以写入在直接 copy 到当前的 block
+//   否则只 copy 部分(left)内容到当前 block ,然后再次进入循环再写入一个新的 block .
+//   最后则是返回最终写入完毕后的 lsn .
+//
+//
+lsn_t log_buffer_write(log_t &log, const Log_handle &handle, const byte *str, size_t str_len, lsn_t start_lsn) {
   ut_ad(rw_lock_own(log.sn_lock_inst, RW_LOCK_S));
-
   ut_a(log.buf != nullptr);
   ut_a(log.buf_size > 0);
   ut_a(log.buf_size % OS_FILE_LOG_BLOCK_SIZE == 0);
@@ -985,14 +1043,10 @@ lsn_t log_buffer_write(log_t &log, const Log_handle &handle, const byte *str,
 
       ut_a((uintptr_t(ptr) % OS_FILE_LOG_BLOCK_SIZE) == LOG_BLOCK_HDR_SIZE);
 
-      ut_a((uintptr_t(ptr) & ~uintptr_t(LOG_BLOCK_HDR_SIZE)) %
-               OS_FILE_LOG_BLOCK_SIZE ==
-           0);
+      ut_a((uintptr_t(ptr) & ~uintptr_t(LOG_BLOCK_HDR_SIZE)) % OS_FILE_LOG_BLOCK_SIZE == 0);
 
       log_block_set_first_rec_group(
-          reinterpret_cast<byte *>(uintptr_t(ptr) &
-                                   ~uintptr_t(LOG_BLOCK_HDR_SIZE)),
-          0);
+          reinterpret_cast<byte *>(uintptr_t(ptr) & ~uintptr_t(LOG_BLOCK_HDR_SIZE)), 0);
 
       if (str_len == 0) {
         /* We have finished at the boundary. */
@@ -1013,10 +1067,12 @@ lsn_t log_buffer_write(log_t &log, const Log_handle &handle, const byte *str,
   return (lsn);
 }
 
-void log_buffer_write_completed(log_t &log, const Log_handle &handle,
-                                lsn_t start_lsn, lsn_t end_lsn) {
-  ut_ad(rw_lock_own(log.sn_lock_inst, RW_LOCK_S));
 
+// log_buffer_write_completed 是用来更新 recent_written 字段，这个字段主要是用来 track 已经写入到 log buffer 的 lsn 。
+// 逻辑很简单，就是判断是否 recent_written 是否还有空间，如果没有则等待，否则加入到 recent_written .
+//
+void log_buffer_write_completed(log_t &log, const Log_handle &handle, lsn_t start_lsn, lsn_t end_lsn) {
+  ut_ad(rw_lock_own(log.sn_lock_inst, RW_LOCK_S));
   ut_a(log_lsn_validate(start_lsn));
   ut_a(log_lsn_validate(end_lsn));
   ut_a(end_lsn > start_lsn);
@@ -1078,6 +1134,10 @@ void log_buffer_write_completed(log_t &log, const Log_handle &handle,
   }
 }
 
+
+// log_wait_for_space_in_log_recent_closed，到达这里的话，则说明我们已经写完 log buffer ,然后等待加脏页到 flush list ,
+// 而在 InnoDB 中 log.recent_closed 用来 track 在 flush list 中的脏页，因此这里在加脏页之前需要判断是否 link buf 已满。
+//
 void log_wait_for_space_in_log_recent_closed(log_t &log, lsn_t lsn) {
   ut_a(log_lsn_validate(lsn));
 
@@ -1095,6 +1155,7 @@ void log_wait_for_space_in_log_recent_closed(log_t &log, lsn_t lsn) {
   }
 }
 
+// 将对应的 Page 插入 Buffer Pool 中的 flush_list 后更新 log_t 中的 recent_closed 链表.
 void log_buffer_close(log_t &log, const Log_handle &handle) {
   const lsn_t start_lsn = handle.start_lsn;
   const lsn_t end_lsn = handle.end_lsn;

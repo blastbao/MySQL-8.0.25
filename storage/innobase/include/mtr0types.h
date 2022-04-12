@@ -251,10 +251,21 @@ enum mlog_id_t {
   MLOG_BIGGEST_TYPE = MLOG_TEST
 };
 
-/** @} */
-
-/** Types for the mlock objects to store in the mtr memo; NOTE that the
-first 3 values must be RW_S_LATCH, RW_X_LATCH, RW_NO_LATCH */
+/** Types for the mlock objects to store in the mtr memo;
+    NOTE that the first 3 values must be RW_S_LATCH, RW_X_LATCH, RW_NO_LATCH
+*/
+//
+//
+//          变量名	            描述
+//   MTR_MEMO_PAGE_S_FIX	用于 PAGE 上的 S 锁
+//   MTR_MEMO_PAGE_X_FIX	用于 PAGE 上的 X 锁
+//   MTR_MEMO_PAGE_SX_FIX	用于 PAGE 上的 SX 锁，以上锁通过 mtr_memo_push 保存到 mtr 中
+//   MTR_MEMO_BUF_FIX	    PAGE 上未加读写锁，仅做 buf fix
+//   MTR_MEMO_S_LOCK	    S  锁，通常用于索引锁
+//   MTR_MEMO_X_LOCK	    X  锁，通常用于索引锁
+//   MTR_MEMO_SX_LOCK	    SX 锁，通常用于索引锁
+//                          以上 3 个锁，通过 mtr_s/x/sx_lock 加锁，通过 mtr_memo_release 释放锁
+//
 enum mtr_memo_type_t {
   MTR_MEMO_PAGE_S_FIX = RW_S_LATCH,
 
@@ -279,6 +290,8 @@ enum mtr_memo_type_t {
 #define MTR_MAGIC_N 54551
 #endif /* UNIV_DEBUG */
 
+
+// 表示当前 MTR 的状态，主要有 3 个状态，分别是激活、提交中、以及提交完毕.
 enum mtr_state_t {
   MTR_STATE_INIT = 0,
   MTR_STATE_ACTIVE = 12231,

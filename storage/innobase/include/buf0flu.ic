@@ -53,19 +53,21 @@ void buf_flush_insert_sorted_into_flush_list(
 /** This function should be called at a mini-transaction commit, if a page was
  modified in it. Puts the block to the list of modified blocks, if it is not
  already in it. */
+//
+// 如果有页面在 mtr 中被修改的话，则应该在 mtr 提交时调用此函数。
+// 如果块 block 没有被列入 flush_list 列表，则将其加入其中。
+
 UNIV_INLINE
 void buf_flush_note_modification(
     buf_block_t *block,      /*!< in: block which is modified */
-    lsn_t start_lsn,         /*!< in: start lsn of the mtr that
-                             modified this block */
-    lsn_t end_lsn,           /*!< in: end lsn of the mtr that
-                             modified this block */
+    lsn_t start_lsn,         /*!< in: start lsn of the mtr that modified this block */
+    lsn_t end_lsn,           /*!< in: end lsn of the mtr that modified this block */
     FlushObserver *observer) /*!< in: flush observer */
 {
+
 #ifdef UNIV_DEBUG
   {
-    /* Allow write to proceed to shared temporary tablespace
-    in read-only mode. */
+    /* Allow write to proceed to shared temporary tablespace in read-only mode. */
     ut_ad(!srv_read_only_mode ||
           fsp_is_system_temporary(block->page.id.space()));
     ut_ad(buf_block_get_state(block) == BUF_BLOCK_FILE_PAGE);
@@ -76,6 +78,7 @@ void buf_flush_note_modification(
     ut_ad(!buf_flush_list_mutex_own(buf_pool));
   }
 #endif /* UNIV_DEBUG */
+
 
   mutex_enter(&block->mutex);
 

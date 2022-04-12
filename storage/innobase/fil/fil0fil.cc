@@ -4473,12 +4473,15 @@ static void fil_op_write_log(mlog_id_t type, space_id_t space_id,
 
   byte *log_ptr = nullptr;
 
+
+  // 打开 mtr 的 m_log
   if (!mlog_open(mtr, 11 + 4 + 2 + 1, log_ptr)) {
     /* Logging in mtr is switched off during crash recovery:
     in that case mlog_open returns nullptr */
     return;
   }
 
+  // 函数向 m_log 中写入 type，space id，page no ，并增加 m_n_log_recs 的数量
   log_ptr = mlog_write_initial_log_record_low(type, space_id, 0, log_ptr, mtr);
 
   if (type == MLOG_FILE_CREATE) {
@@ -4511,8 +4514,10 @@ static void fil_op_write_log(mlog_id_t type, space_id_t space_id,
 
       log_ptr += 2;
 
+      // 更新 m_log 中的位置
       mlog_close(mtr, log_ptr);
 
+      // 调用 mtr->get_log()->push() ，按不同的类型写数据
       mlog_catenate_string(mtr, reinterpret_cast<const byte *>(new_path), len);
       break;
     case MLOG_FILE_DELETE:

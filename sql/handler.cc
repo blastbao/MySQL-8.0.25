@@ -1588,7 +1588,62 @@ std::pair<int, bool> commit_owned_gtids(THD *thd, bool all) {
     stored functions or triggers. So we simply do nothing now.
     TODO: This should be fixed in later ( >= 5.1) releases.
 */
-
+//
+// [插入-提交阶段]
+//
+//   |--> ha_commit_trans
+//   |    |--> MYSQL_BIN_LOG::prepare
+//   |    |    |--> ha_prepare_low
+//   |    |    |    |--> //进入innodb层
+//   |    |    |    |--> innobase_xa_prepare
+//   |    |    |    |    |--> trx_prepare_for_mysql
+//   |    |    |    |    |    |--> trx_prepare
+//   |    |    |    |    |    |    |--> trx_prepare_low
+//   |    |    |    |    |    |    |    |--> mtr_start_sync(mtr_4)
+//   |    |    |    |    |    |    |    |--> //主要是设置Prepare阶段的undo的状态；包括tid与tid状态
+//   |    |    |    |    |    |    |    |--> trx_undo_set_state_at_prepare(mtr_4)
+//   |    |    |    |    |    |    |    |    |--> trx_undo_page_get(mtr_4)
+//   |    |    |    |    |    |    |    |    |    |--> buf_page_get_gen
+//   |    |    |    |    |    |    |    |    |    |    |--> //undo page 加 RW_X_LATCH 入栈
+//   |    |    |    |    |    |    |    |    |    |    |--> mtr_memo_push(mtr_4)
+//   |    |    |    |    |    |    |    |    |--> //Write GTID information if there
+//   |    |    |    |    |    |    |    |    |--> trx_undo_gtid_write(mtr_4)
+//   |    |    |    |    |    |    |    |    |--> //写入TRX_UNDO_STATE
+//   |    |    |    |    |    |    |    |    |--> mlog_write_ulint(seg_hdr+TRX_UNDO_STATE, undo->state, MLOG_2BYTES,mtr_4);
+//   |    |    |    |    |    |    |    |    |--> //写入TRX_UNDO_FLAGS
+//   |    |    |    |    |    |    |    |    |--> mlog_write_ulint(undo_header+TRX_UNDO_FLAGS,undo->flag,MLOG_1BYTE, mtr_4)
+//   |    |    |    |    |    |    |    |    |--> //undo 写入 xid，设置undo的xid
+//   |    |    |    |    |    |    |    |    |--> trx_undo_write_xid(undo_header, &undo->xid, mtr_4);
+//   |    |    |    |    |    |    |    |    |    |--> mlog_write_ulint(MLOG_4BYTES)
+//   |    |    |    |    |    |    |    |    |    |--> mlog_write_ulint(MLOG_4BYTES)
+//   |    |    |    |    |    |    |    |    |    |--> mlog_write_ulint(MLOG_4BYTES)
+//   |    |    |    |    |    |    |    |    |    |--> mlog_write_string--MLOG_WRITE_STRING
+//   |    |    |    |    |    |    |    |--> mtr_commit(mtr_4)
+//   |    |--> MYSQL_BIN_LOG::commit
+//   |    |    |--> MYSQL_BIN_LOG::ordered_commit
+//   |    |    |    |--> MYSQL_BIN_LOG::process_commit_stage_queue
+//   |    |    |    |    |--> ha_commit_low
+//   |    |    |    |    |    |--> //进入innodb层
+//   |    |    |    |    |    |--> innobase_commit
+//   |    |    |    |    |    |    |--> innobase_commit_low
+//   |    |    |    |    |    |    |    |--> trx_commit_for_mysql
+//   |    |    |    |    |    |    |    |    |--> trx_commit
+//   |    |    |    |    |    |    |    |    |    |--> // mtr_5 用于 commit transaction
+//   |    |    |    |    |    |    |    |    |    |--> mtr_start_sync(mtr_5);
+//   |    |    |    |    |    |    |    |    |    |--> trx_commit_low(mtr_5)
+//   |    |    |    |    |    |    |    |    |    |    |--> trx_write_serialisation_history(mtr_5)
+//   |    |    |    |    |    |    |    |    |    |    |    |--> trx_undo_set_state_at_finish(mtr_5)
+//   |    |    |    |    |    |    |    |    |    |    |    |    |--> trx_undo_page_get(mtr_5)
+//   |    |    |    |    |    |    |    |    |    |    |    |    |    |--> buf_page_get_gen
+//   |    |    |    |    |    |    |    |    |    |    |    |    |    |--> //undo page 加 RW_X_LATCH 入栈
+//   |    |    |    |    |    |    |    |    |    |    |    |    |    |--> mtr_memo_push(mtr_5)
+//   |    |    |    |    |    |    |    |    |    |    |    |    |--> //设置事务结束时的undo状态,这里是 TRX_UNDO_CACHED
+//   |    |    |    |    |    |    |    |    |    |    |    |    |--> mlog_write_ulint(TRX_UNDO_STATE,state, MLOG_2BYTES,mtr_5);
+//   |    |    |    |    |    |    |    |    |    |    |    |--> trx_sys_update_mysql_binlog_offset(mtr_5)
+//   |    |    |    |    |    |    |    |    |    |    |    |    |--> // 更新偏移量信息到系统表空间,设置binlog的位点
+//   |    |    |    |    |    |    |    |    |    |    |    |    |--> write_binlog_position(mtr_5)
+//   |    |    |    |    |    |    |    |    |    |    |    |    |    |--> mlog_write_ulint(MLOG_4BYTES)
+//   |    |    |    |    |    |    |    |    |    |    |--> mtr_commit(mtr_5);
 int ha_commit_trans(THD *thd, bool all, bool ignore_global_read_lock) {
   int error = 0;
   THD_STAGE_INFO(thd, stage_waiting_for_handler_commit);

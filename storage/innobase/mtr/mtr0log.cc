@@ -53,6 +53,7 @@ void mlog_catenate_string(mtr_t *mtr, const byte *str, ulint len) {
     return;
   }
 
+  // 按不同的类型写数据
   mtr->get_log()->push(str, ib_uint32_t(len));
 }
 
@@ -402,9 +403,8 @@ byte *mlog_parse_string(
   return (ptr + len);
 }
 
-bool mlog_open_and_write_index(mtr_t *mtr, const byte *rec,
-                               const dict_index_t *index, mlog_id_t type,
-                               ulint size, byte *&log_ptr) {
+// 记录索引相关信息
+bool mlog_open_and_write_index(mtr_t *mtr, const byte *rec, const dict_index_t *index, mlog_id_t type, ulint size, byte *&log_ptr) {
 #ifndef UNIV_HOTBACKUP
   const byte *log_start;
   const byte *log_end;

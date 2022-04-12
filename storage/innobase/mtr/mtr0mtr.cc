@@ -279,37 +279,36 @@ struct Debug_check_no_latching {
 #endif
 
 /** Add blocks modified by the mini-transaction to the flush list. */
+/** 将被 mtr 修改的 block 添加到刷新列表 flush list 中 */
 struct Add_dirty_blocks_to_flush_list {
+
   /** Constructor.
-  @param[in]	start_lsn	LSN of the first entry that was
-                                  added to REDO by the MTR
-  @param[in]	end_lsn		LSN after the last entry was
-                                  added to REDO by the MTR
-  @param[in,out]	observer	flush observer */
-  Add_dirty_blocks_to_flush_list(lsn_t start_lsn, lsn_t end_lsn,
-                                 FlushObserver *observer);
+  @param[in]	    start_lsn	LSN of the first entry that was added to REDO by the MTR
+  @param[in]	    end_lsn		LSN after the last entry was added to REDO by the MTR
+  @param[in,out]	observer	flush observer
+  */
+  Add_dirty_blocks_to_flush_list(lsn_t start_lsn, lsn_t end_lsn, FlushObserver *observer);
 
   /** Add the modified page to the buffer flush list. */
+  /** 将修改过的 block 添加到 buffer flush list 中 */
   void add_dirty_page_to_flush_list(mtr_memo_slot_t *slot) const {
     ut_ad(m_end_lsn > m_start_lsn || (m_end_lsn == 0 && m_start_lsn == 0));
-
 #ifndef UNIV_HOTBACKUP
     buf_block_t *block;
-
     block = reinterpret_cast<buf_block_t *>(slot->object);
-
-    buf_flush_note_modification(block, m_start_lsn, m_end_lsn,
-                                m_flush_observer);
+    buf_flush_note_modification(block, m_start_lsn, m_end_lsn, m_flush_observer);
 #endif /* !UNIV_HOTBACKUP */
   }
 
   /** @return true always. */
+  //
+  // 运算符 () 的重载。
   bool operator()(mtr_memo_slot_t *slot) const {
-    if (slot->object != nullptr) {
-      if (slot->type == MTR_MEMO_PAGE_X_FIX ||
-          slot->type == MTR_MEMO_PAGE_SX_FIX) {
-        add_dirty_page_to_flush_list(slot);
 
+    if (slot->object != nullptr) {
+      //
+      if (slot->type == MTR_MEMO_PAGE_X_FIX || slot->type == MTR_MEMO_PAGE_SX_FIX) {
+        add_dirty_page_to_flush_list(slot);
       } else if (slot->type == MTR_MEMO_BUF_FIX) {
         buf_block_t *block;
         block = reinterpret_cast<buf_block_t *>(slot->object);
@@ -333,14 +332,12 @@ struct Add_dirty_blocks_to_flush_list {
   FlushObserver *const m_flush_observer;
 };
 
+
 /** Constructor.
-@param[in]	start_lsn	LSN of the first entry that was added
-                                to REDO by the MTR
-@param[in]	end_lsn		LSN after the last entry was added
-                                to REDO by the MTR
+@param[in]	    start_lsn	LSN of the first entry that was added to REDO by the MTR
+@param[in]	    end_lsn		LSN after the last entry was added to REDO by the MTR
 @param[in,out]	observer	flush observer */
-Add_dirty_blocks_to_flush_list::Add_dirty_blocks_to_flush_list(
-    lsn_t start_lsn, lsn_t end_lsn, FlushObserver *observer)
+Add_dirty_blocks_to_flush_list::Add_dirty_blocks_to_flush_list(lsn_t start_lsn, lsn_t end_lsn, FlushObserver *observer)
     : m_end_lsn(end_lsn), m_start_lsn(start_lsn), m_flush_observer(observer) {
   /* Do nothing */
 }
@@ -360,8 +357,7 @@ class mtr_t::Command {
   /** Destructor */
   ~Command() { ut_ad(m_impl == nullptr); }
 
-  /** Write the redo log record, add dirty pages to the flush list and
-  release the resources. */
+  /** Write the redo log record, add dirty pages to the flush list and release the resources. */
   void execute();
 
   /** Add blocks modified in this mini-transaction to the flush list. */
@@ -473,11 +469,25 @@ bool mtr_t::is_block_dirtied(const buf_block_t *block) {
 }
 
 #ifndef UNIV_HOTBACKUP
+
 /** Write the block contents to the REDO log */
 struct mtr_write_log_t {
+
   /** Append a block to the redo log buffer.
   @return whether the appending should continue */
+  //
+  // 操作符重载，参数 block 表示将要写入 redo log 的内容
+  //
+  // 步骤:
+  //   首先是调用 log_buffer_write 来写入 block 到 redo log.
+  //   更新 m_left_to_write.
+  //   如果内容写完则 log_buffer_set_first_record_group ？
+  //   调用 log_buffer_write_completed 完成 buffer 的写入
+  //   更新 m_lsn , 以便于下次使用.
+  //
+  // 核心就是两个调用，一个是 log_buffer_write , 一个是 log_buffer_write_completed .
   bool operator()(const mtr_buf_t::block_t *block) {
+
     lsn_t start_lsn;
     lsn_t end_lsn;
 
@@ -489,11 +499,10 @@ struct mtr_write_log_t {
 
     start_lsn = m_lsn;
 
-    end_lsn = log_buffer_write(*log_sys, m_handle, block->begin(),
-                               block->used(), start_lsn);
+    // 1.
+    end_lsn = log_buffer_write(*log_sys, m_handle, block->begin(), block->used(), start_lsn);
 
-    ut_a(end_lsn % OS_FILE_LOG_BLOCK_SIZE <
-         OS_FILE_LOG_BLOCK_SIZE - LOG_BLOCK_TRL_SIZE);
+    ut_a(end_lsn % OS_FILE_LOG_BLOCK_SIZE < OS_FILE_LOG_BLOCK_SIZE - LOG_BLOCK_TRL_SIZE);
 
     m_left_to_write -= block->used();
 
@@ -515,11 +524,11 @@ struct mtr_write_log_t {
 
         Only in case 1), the next group of records is the first group
         of log records in block containing m_lsn. */
-        && m_handle.start_lsn / OS_FILE_LOG_BLOCK_SIZE !=
-               end_lsn / OS_FILE_LOG_BLOCK_SIZE) {
+        && m_handle.start_lsn / OS_FILE_LOG_BLOCK_SIZE != end_lsn / OS_FILE_LOG_BLOCK_SIZE) {
       log_buffer_set_first_record_group(*log_sys, m_handle, end_lsn);
     }
 
+    // 2.
     log_buffer_write_completed(*log_sys, m_handle, start_lsn, end_lsn);
 
     m_lsn = end_lsn;
@@ -540,21 +549,34 @@ thread_local ut::unordered_set<const mtr_t *> mtr_t::s_my_thread_active_mtrs;
 /** Start a mini-transaction.
 @param sync		true if it is a synchronous mini-transaction
 @param read_only	true if read only mini-transaction */
+
+// MTR 的启动函数 mtr_t::start 。
+// 这个函数包含两个参数，第一个 sync 表示是否当前的 mtr 是同步，第二个是 read_only ，这个表示当前 mtr 是否只读。
+// 默认情况下 sync=true, read_only=false 。
+//
+//
+// mtr_start 主要包括：
+//   1. 初始化 mtr 的各个状态变量
+//   2. 默认模式为 MTR_LOG_ALL ，表示记录所有的数据变更
+//   3. mtr 状态设置为 ACTIVE 状态（MTR_STATE_ACTIVE）
+//   4. 为锁管理对象和日志管理对象初始化内存（mtr_buf_t），初始化对象链表
+//
 void mtr_t::start(bool sync, bool read_only) {
-  ut_ad(m_impl.m_state == MTR_STATE_INIT ||
-        m_impl.m_state == MTR_STATE_COMMITTED);
+
+  ut_ad(m_impl.m_state == MTR_STATE_INIT || m_impl.m_state == MTR_STATE_COMMITTED);
 
   UNIV_MEM_INVALID(this, sizeof(*this));
-
   UNIV_MEM_INVALID(&m_impl, sizeof(m_impl));
 
   m_sync = sync;
 
   m_commit_lsn = 0;
 
-  new (&m_impl.m_log) mtr_buf_t();
+  /* 用于记录 redo log 的 mtr 本地 Buffer. */
+  new (&m_impl.m_log)  mtr_buf_t();
   new (&m_impl.m_memo) mtr_buf_t();
 
+  /* 初始化 mtr 基础字段. */
   m_impl.m_mtr = this;
   m_impl.m_log_mode = MTR_LOG_ALL;
   m_impl.m_inside_ibuf = false;
@@ -568,6 +590,7 @@ void mtr_t::start(bool sync, bool read_only) {
 #ifndef UNIV_HOTBACKUP
   check_nolog_and_mark();
 #endif /* !UNIV_HOTBACKUP */
+
   ut_d(m_impl.m_magic_n = MTR_MAGIC_N);
 
 #ifdef UNIV_DEBUG
@@ -576,6 +599,7 @@ void mtr_t::start(bool sync, bool read_only) {
   reusing MTR without committing or destructing it. */
   ut_a(res.second);
 #endif /* UNIV_DEBUG */
+
 }
 
 #ifndef UNIV_HOTBACKUP
@@ -653,24 +677,43 @@ void mtr_t::Command::release_resources() {
 // 以及flush list中的脏页按LSN递增顺序排序。
 //
 // 在多线程并发写入Redo Log Buffer及flush list时，这一约束是通过两个全局锁log_sys_t::mutex和log_sys_t::flush_order_mutex实现的。
+//
+
+
+// 在插入数据过程中，产生的 redo log 都记录在 mtr.m_impl.m_log 中，只有显式提交 mtr 时，才会写到公共 redo log buffer 中，
+// 并将对应的脏页加到 flush list 上。
+//
+// 执行步骤：
+//   Step 1: mtr_t::Command::prepare_write() 主要是持有 log_sys->mutex ，做写入前检查。
+//   Step 2: mtr_t::Command::finish_write() 将日志从 mtr 中拷贝到公共 redo log buffer。
+//   Step 3：如果本次修改产生了脏页，获取 log_sys->log_flush_order_mutex ，随后释放 log_sys->mutex 。
+//   Step 4. 将当前 Mtr 修改的脏页加入到 flush list 上，脏页上记录的 lsn 为当前 mtr 写入的结束点 lsn 。
+//           基于上述加锁逻辑，能够保证 flush list 上的脏页总是以 LSN 排序。
+//   Step 5. 释放 log_sys->log_flush_order_mutex 锁
+//   Step 6. 释放当前 mtr 持有的锁（主要是 page latch ）及分配的内存，mtr 完成提交。
+
 
 void mtr_t::commit() {
   ut_ad(is_active());
   ut_ad(!is_inside_ibuf());
   ut_ad(m_impl.m_magic_n == MTR_MAGIC_N);
 
-  // 设置状态
+  //1. 首先设为 COMMITTING 状态
   m_impl.m_state = MTR_STATE_COMMITTING;
 
   DBUG_EXECUTE_IF("mtr_commit_crash", DBUG_SUICIDE(););
 
   Command cmd(this);
 
-  if (m_impl.m_n_log_recs > 0 ||
-      (m_impl.m_modifications && m_impl.m_log_mode == MTR_LOG_NO_REDO)) {
+  // 2. 然后进行判断是否需要执行所做的修改：
+  //    - m_n_log_recs(表示当前 mtr redo log 数目) 大于 0 .
+  //    - mtr 修改了 buffer pool pages 并且不生成 redo log 操作
+  if (m_impl.m_n_log_recs > 0 || (m_impl.m_modifications && m_impl.m_log_mode == MTR_LOG_NO_REDO)) {
     ut_ad(!srv_read_only_mode || m_impl.m_log_mode == MTR_LOG_NO_REDO);
+    // 执行 commit
     cmd.execute();
   } else {
+    // 如果 mtr 没有产生 redo 且没有修改数据页，就不用执行 commit 逻辑，仅仅释放资源即可。
     cmd.release_all();
     cmd.release_resources();
   }
@@ -756,7 +799,19 @@ void mtr_t::release_page(const void *ptr, mtr_memo_type_t type) {
 
 /** Prepare to write the mini-transaction log to the redo log buffer.
 @return number of bytes to write in finish_write() */
+
+// 将 mtr 日志写入 redo log buffer 前的准备工作。
+//
+// 先来看几个变量.
+//   - m_log.size() 这个返回当前 m_log buffer 的字节长度.
+//   - m_n_log_recs 这个表示当前 mtr 将要写入的 log record 个数.
+//
+// 因此 prepare_write 这个函数就是根据 m_n_log_recs 来判断是否是多个 record ，从而来设置不同的标记。
+//   - 如果 redo log 记录数目 n_recs 小于等于 1 ，设置 Flag 为 MLOG_SINGLE_REC_FLAG ，标记当前 mtr 只含有一条记录。
+//   - 否则，mtr 中包含多条日志记录，在最后附加 MLOG_MULTI_REC_END 类型记录并更新 nrec++ ，用于保证完整性。
+//
 ulint mtr_t::Command::prepare_write() {
+
   switch (m_impl->m_log_mode) {
     case MTR_LOG_SHORT_INSERTS:
       ut_ad(0);
@@ -777,34 +832,28 @@ ulint mtr_t::Command::prepare_write() {
 
   ut_a(!recv_recovery_is_on() || !recv_no_ibuf_operations);
 
+  //
   ulint len = m_impl->m_log.size();
   ut_ad(len > 0);
 
+  // 获取 redo log 记录数
   ulint n_recs = m_impl->m_n_log_recs;
   ut_ad(n_recs > 0);
-
   ut_ad(log_sys != nullptr);
-
   ut_ad(m_impl->m_n_log_recs == n_recs);
-
-  /* This was not the first time of dirtying a
-  tablespace since the latest checkpoint. */
-
+  /* This was not the first time of dirtying a tablespace since the latest checkpoint. */
   ut_ad(n_recs == m_impl->m_n_log_recs);
 
+  // 如果 redo log 记录数目 n_recs 小于等于 1 ，设置 Flag 为 MLOG_SINGLE_REC_FLAG ；
   if (n_recs <= 1) {
     ut_ad(n_recs == 1);
-
-    /* Flag the single log record as the
-    only record in this mini-transaction. */
-
+    /* Flag the single log record as the only record in this mini-transaction. */
+    /* 标记 mtr 中只有一条数据。*/
     *m_impl->m_log.front()->begin() |= MLOG_SINGLE_REC_FLAG;
-
+  // 否则，设置 Flag 为 MLOG_MULTI_REC_END 。
   } else {
-    /* Because this mini-transaction comprises
-    multiple log records, append MLOG_MULTI_REC_END
-    at the end. */
-
+    /* Because this mini-transaction comprises multiple log records, append MLOG_MULTI_REC_END at the end. */
+    /* 因为 mtr 中包含多条日志记录，所以在最后附加 MLOG_MULTI_REC_END 类型记录，用于保证完整性。 */
     mlog_catenate_ulint(&m_impl->m_log, MLOG_MULTI_REC_END, MLOG_1BYTE);
     ++len;
   }
@@ -812,7 +861,6 @@ ulint mtr_t::Command::prepare_write() {
   ut_ad(m_impl->m_log_mode == MTR_LOG_ALL);
   ut_ad(m_impl->m_log.size() == len);
   ut_ad(len > 0);
-
   return len;
 }
 #endif /* !UNIV_HOTBACKUP */
@@ -829,23 +877,69 @@ void mtr_t::Command::release_all() {
 }
 
 /** Add blocks modified in this mini-transaction to the flush list. */
-void mtr_t::Command::add_dirty_blocks_to_flush_list(lsn_t start_lsn,
-                                                    lsn_t end_lsn) {
-  Add_dirty_blocks_to_flush_list add_to_flush(start_lsn, end_lsn,
-                                              m_impl->m_flush_observer);
+void mtr_t::Command::add_dirty_blocks_to_flush_list(lsn_t start_lsn, lsn_t end_lsn) {
+  // 通过重载 () 操作符实现核心逻辑
+  Add_dirty_blocks_to_flush_list add_to_flush(start_lsn, end_lsn, m_impl->m_flush_observer);
 
+  // 迭代器封装，当调用 iterator 的 () 时会调用底层对象的 () ，也即 Add_dirty_blocks_to_flush_list 的 ()
   Iterate<Add_dirty_blocks_to_flush_list> iterator(add_to_flush);
 
+  // m_memo.for_each_block_in_reverse 比较简单，就是从尾部开始遍历，然后调用 iterator 的 ()
   m_impl->m_memo.for_each_block_in_reverse(iterator);
 }
 
 /** Write the redo log record, add dirty pages to the flush list and release the resources. */
-
-// mtr_commit 时会将 mtr 中的 mlog 和 mblock（dirty page）分别拷贝到 logbuffer 和 flushlist 中。
-// 在真实事务提交时，会将该事务涉及的所有 mlog 刷盘，这样各个原子变更就持久化了。
-// 恢复的时候按照类型(mtr_type_t)调用相应的回调函数，恢复 page 。
-
-
+//
+// 在 mtr 提交过程中，最重要的过程是 cmd.execute() ，首先通过 prepare_write 得到最终要写入的日志长度，分为5步：
+//
+//  - log_buffer_reserve：等待recent_written的空间，预留logbuffer的空间，如果空间不够，会调用log_write_up_to清理LogBuffer空间；log_write_up_to通过设置writer_event，异步触发log_writer写。
+//  - write_log：将m_log的内容memcpy到LogBuffer中，然后在recent_written加一个link。
+//  - log_wait_for_space_in_log_recent_closed：等待recent_closed的空间
+//  - add_dirty_block_to_flush_list：将该mtr对应的脏页添加到flushlist中
+//  - log_buffer_close：在recent_closed中加一个link。
+//
+// 具体流程如下，其中 LinkBuf，recent_written ，recent_closed 等结构体涉及到 redo log 的无锁优化，后文会具体介绍。
+//
+//  |--> mtr_t::Command::execute
+//  |    |--> //在excecute中会先进行写之前的操作，主要是进行一些校验以及最终返回将要写入的redolog长度
+//  |    |--> mtr_t::Command::prepare_write
+//  |    |--> //进入excecute阶段，首先构造mtr_write_log_t结构
+//  |    |--> mtr_write_log_t write_log;
+//  |    |--> //1.分配log buf以及初始化write_log.
+//  |    |--> //不同的mtr会首先调用log_buffer_reserve函数获得起始和终点lsn位置
+//  |    |--> log_buffer_reserve
+//  |    |    |--> log_buffer_s_lock_enter
+//  |    |    |    |--> log.sn_lock.s_lock
+//  |    |    |--> //用自己的REDO长度，原子地对全局偏移log.sn做fetch_add，得到自己在Log Buffer中独享的空间
+//  |    |    |--> log.sn.fetch_add
+//  |    |    |--> //不同mtr并行的将自己的m_log中的数据拷贝到各自独享的空间内。
+//  |    |    |--> log_wait_for_space_after_reserving
+//  |    |    |    |--> //确保这条 redo log 能完整的写入 redo log Buffer，而且回环后不会覆盖尚未写入磁盘的 redo log.
+//  |    |    |    |--> log_wait_for_space_in_log_buf
+//  |    |    |    |    |--> log_write_up_to
+//  |    |    |    |    |    |--> log_wait_for_write
+//  |    |    |    |    |    |    |--> //log_write_notify会唤醒这个条件变量
+//  |    |    |    |    |    |    |--> os_event_wait_for(log.write_events[slot],stop_condition);
+//  |    |    |    |    |    |--> log_wait_for_flush
+//  |    |--> //2.从mtr的buffer中写入内容到redolog的buffer.
+//  |    |--> m_impl->m_log.for_each_block(write_log)
+//  |    |    |--> mtr_write_log_t::operator
+//  |    |    |    |--> //写入到redo log buffer(log->buf).
+//  |    |    |    |--> log_buffer_write
+//  |    |    |    |--> //拷贝完成后触发LinkBuf更新,更新recent_written字段
+//  |    |    |    |--> log_buffer_write_completed
+//  |    |    |    |    |--> //更新本次写入的内容范围对应的LinkBuf内特定的数组项值
+//  |    |    |    |    |--> log.recent_written.add_link
+//  |    |--> //3.在加脏页之前需要判断是否link buf已满。
+//  |    |--> log_wait_for_space_in_log_recent_closed
+//  |    |--> //4.加脏页到flush list中.
+//  |    |--> add_dirty_blocks_to_flush_list
+//  |    |    |--> add_dirty_page_to_flush_list
+//  |    |--> log_buffer_close
+//  |    |    |--> //5.更新recent_closed字段
+//  |    |    |--> log.recent_closed.add_link(start_lsn, end_lsn);
+//
+//
 void mtr_t::Command::execute() {
   ut_ad(m_impl->m_log_mode != MTR_LOG_NONE);
 
@@ -854,19 +948,24 @@ void mtr_t::Command::execute() {
   // 获取 redo log 的大小
   ulint len = prepare_write();
 
+  // 如果 redo log 的长度不为 0 时, 调用 log_buffer_reserve() 确保全局 redo log buffer 中有空闲空间。
   if (len > 0) {
 
+    // 首先构造一个 mtr_write_log_t 结构，用于将 mtr 中的日志写入到 redo log buffer 中.
     mtr_write_log_t write_log;
 
+    // m_left_to_write 表示还需要写入到 redo log 的内容的长度，因此该值默认就是 len .
     write_log.m_left_to_write = len;
 
-    // 为 redo log 在全局的 redo log buffer 中分配空间
-    auto handle = log_buffer_reserve(*log_sys, len);
+    // 调用 log_buffer_reserve() 确保全局 redo log buffer 中有足够(len)的空闲空间，并返回 Log_handle(start_lsn, end_lsn) 给本 mtr 使用。
+     auto handle = log_buffer_reserve(*log_sys, len);
 
     write_log.m_handle = handle;
+
+    // 取出 redo log 的 start_lsn
     write_log.m_lsn = handle.start_lsn;
 
-    // 对每个 block 执行真正的 copy 操作，将 redo log copy 到 redo log buffer 中
+    // 将 mtr 的 buffer 写入到 redo log buffer 中
     m_impl->m_log.for_each_block(write_log);
 
     ut_ad(write_log.m_left_to_write == 0);
@@ -880,22 +979,28 @@ void mtr_t::Command::execute() {
     // 把脏页 dirty_blocks 拷贝到 flush list 中
     add_dirty_blocks_to_flush_list(handle.start_lsn, handle.end_lsn);
 
-    // 更新脏页的刷入信息 recent_closed.add_link(start_lsn, end_lsn)
+    // 把脏页插入 Buffer Pool 中的 flush_list 后，更新 log_t 中的 recent_closed 链表.
     log_buffer_close(*log_sys, handle);
 
     m_impl->m_mtr->m_commit_lsn = handle.end_lsn;
 
   } else {
-
+  // 否则，redo log 的长度为 0 ，直接调用 add_dirty_blocks_to_flush_list(0, 0)
     DEBUG_SYNC_C("mtr_noredo_before_add_dirty_blocks");
     add_dirty_blocks_to_flush_list(0, 0);
   }
 
 #endif /* !UNIV_HOTBACKUP */
 
+
+  //
   release_all();
+
+  // 将 m_state 置为 MTR_STATE_COMMITTED
   release_resources();
 }
+
+
 
 #ifndef UNIV_HOTBACKUP
 int mtr_t::Logging::enable(THD *thd) {
@@ -999,13 +1104,11 @@ int mtr_t::Logging::wait_no_log_mtr(THD *thd) {
   Clone_Sec time_out(Clone_Min(5));
 
   bool is_timeout = false;
-  auto err = Clone_Sys::wait(sleep_time, time_out, alert_interval, wait_cond,
-                             nullptr, is_timeout);
+  auto err = Clone_Sys::wait(sleep_time, time_out, alert_interval, wait_cond, nullptr, is_timeout);
 
   if (err == 0 && is_timeout) {
     ut_ad(false);
-    my_error(ER_INTERNAL_ERROR, MYF(0),
-             "Innodb wait for no-log mtr timed out.");
+    my_error(ER_INTERNAL_ERROR, MYF(0), "Innodb wait for no-log mtr timed out.");
     err = ER_INTERNAL_ERROR;
   }
 
@@ -1015,8 +1118,7 @@ int mtr_t::Logging::wait_no_log_mtr(THD *thd) {
 #ifdef UNIV_DEBUG
 /** Check if memo contains the given item.
 @return	true if contains */
-bool mtr_t::memo_contains(const mtr_buf_t *memo, const void *object,
-                          ulint type) {
+bool mtr_t::memo_contains(const mtr_buf_t *memo, const void *object, ulint type) {
   Find find(object, type);
   Iterate<Find> iterator(find);
 
@@ -1107,7 +1209,11 @@ lsn_t mtr_commit_mlog_test(log_t &log, size_t payload) {
 
   /* Copy the created MLOG_TEST to mtr's local buffer. */
   byte *dst = nullptr;
+
+  //
   bool success = mlog_open(&mtr, rec_len, dst);
+
+
   ut_a(success);
   std::memcpy(dst, record, rec_len);
   mlog_close(&mtr, dst + rec_len);
@@ -1208,14 +1314,12 @@ static void mtr_commit_mlog_test_filling_block_low(log_t &log,
     MLOG_TEST_REC_OVERHEAD from payload). Then next recursive call will have an
     easy task of adding record with payload=0. The loop mentioned above is
     implemented by the recursion. */
-    constexpr auto MAX_REC_N =
-        LOG_BLOCK_DATA_SIZE / mtr_buf_t::MAX_DATA_SIZE + 2;
+    constexpr auto MAX_REC_N = LOG_BLOCK_DATA_SIZE / mtr_buf_t::MAX_DATA_SIZE + 2;
 
     ut_a(recursive_level + 1 <= MAX_REC_N);
 
     /* Write next MLOG_TEST record(s). */
-    mtr_commit_mlog_test_filling_block_low(log, req_space_left,
-                                           recursive_level + 1);
+    mtr_commit_mlog_test_filling_block_low(log, req_space_left, recursive_level + 1);
   }
 }
 

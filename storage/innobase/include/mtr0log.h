@@ -147,11 +147,11 @@ byte *mlog_write_initial_dict_log_record(mlog_id_t type, table_id_t id,
                                          mtr_t *mtr);
 
 /** Writes a log record about an operation.
-@param[in]	type		Redo log record type
-@param[in]	space_id	Tablespace identifier
-@param[in]	page_no		Page number
+@param[in]	    type		Redo log record type
+@param[in]	    space_id	Tablespace identifier
+@param[in]	    page_no		Page number
 @param[in,out]	log_ptr		Current end of mini-transaction log
-@param[in,out]	mtr		Mini-transaction
+@param[in,out]	mtr		    Mini-transaction
 @return	end of mini-transaction log */
 UNIV_INLINE
 byte *mlog_write_initial_log_record_low(mlog_id_t type, space_id_t space_id,

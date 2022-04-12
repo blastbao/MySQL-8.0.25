@@ -617,6 +617,7 @@ MY_COMPILER_CLANG_WORKAROUND_REF_DOCBUG()
 @see @ref sect_redo_log_buf_reserve
 */
 MY_COMPILER_DIAGNOSTIC_POP()
+
 /**
 @param[in,out]	log	redo log
 @param[in]	len	number of data bytes to reserve for write
