@@ -683,12 +683,15 @@ void buf_flush_insert_sorted_into_flush_list(
   buf_flush_list_mutex_exit(buf_pool);
 }
 
+//
 bool buf_flush_ready_for_replace(buf_page_t *bpage) {
   ut_d(auto buf_pool = buf_pool_from_bpage(bpage));
   ut_ad(mutex_own(&buf_pool->LRU_list_mutex));
   ut_ad(mutex_own(buf_page_get_mutex(bpage)));
   ut_ad(bpage->in_LRU_list);
 
+
+  // 参数校验
   if (!buf_page_in_file(bpage)) {
     ib::fatal(ER_IB_MSG_123)
         << "Buffer block " << bpage << " state "
@@ -699,10 +702,12 @@ bool buf_flush_ready_for_replace(buf_page_t *bpage) {
   if (!buf_page_can_relocate(bpage)) {
     return false;
   }
+
   /* We can replace it if it is stale, but only if the page is not fixed. */
   if (bpage->was_stale()) {
     return true;
   }
+
   return !bpage->is_dirty();
 }
 
@@ -715,17 +720,13 @@ buf_flush_ready_for_flush() which differ by the tolerance for stale result.
                                 true if the caller needs accurate answer, which
                                 requires the caller to hold buf_page_get_mutex.
 @return true if page seems ready for flush */
-static bool buf_flush_ready_for_flush_gen(buf_page_t *bpage,
-                                          buf_flush_t flush_type, bool atomic) {
+static bool buf_flush_ready_for_flush_gen(buf_page_t *bpage, buf_flush_t flush_type, bool atomic) {
 #ifdef UNIV_DEBUG
   auto buf_pool = buf_pool_from_bpage(bpage);
 
-  ut_a(buf_page_in_file(bpage) ||
-       (buf_page_get_state(bpage) == BUF_BLOCK_REMOVE_HASH &&
-        !mutex_own(&buf_pool->LRU_list_mutex)));
+  ut_a(buf_page_in_file(bpage) || (buf_page_get_state(bpage) == BUF_BLOCK_REMOVE_HASH && !mutex_own(&buf_pool->LRU_list_mutex)));
 #else
-  ut_a(buf_page_in_file(bpage) ||
-       buf_page_get_state(bpage) == BUF_BLOCK_REMOVE_HASH);
+  ut_a(buf_page_in_file(bpage) || buf_page_get_state(bpage) == BUF_BLOCK_REMOVE_HASH);
 #endif /* UNIV_DEBUG */
 
   /*As buf_flush_insert_into_flush_list() acquires SYNC_BUF_BLOCK after
@@ -739,14 +740,13 @@ static bool buf_flush_ready_for_flush_gen(buf_page_t *bpage,
   have the block mutex which will allow us to provide exact answer, even if we
   don't require it to be so (because atomic==false), and this is not required to
   have flush_list mutex in such situation.*/
-  ut_ad(mutex_own(buf_page_get_mutex(bpage)) ||
-        (!atomic && flush_type == BUF_FLUSH_LIST &&
-         buf_flush_list_mutex_own(buf_pool)));
+  ut_ad(mutex_own(buf_page_get_mutex(bpage)) || (!atomic && flush_type == BUF_FLUSH_LIST && buf_flush_list_mutex_own(buf_pool)));
 
   ut_ad(flush_type < BUF_FLUSH_N_TYPES);
 
-  if (!bpage->is_dirty() ||
-      (atomic ? bpage->get_io_fix() != BUF_IO_NONE : bpage->was_io_fixed())) {
+  // !bpage->is_dirty() 表示这个 Block 没有被修改，无须 Flush 。
+  // bpage->get_io_fix() != BUF_IO_NONE: 表示目前该 Page 存在操作，不允许进行 Flush 操作.
+  if (!bpage->is_dirty() || (atomic ? bpage->get_io_fix() != BUF_IO_NONE : bpage->was_io_fixed())) {
     return false;
   }
 
@@ -758,7 +758,6 @@ static bool buf_flush_ready_for_flush_gen(buf_page_t *bpage,
     case BUF_FLUSH_LRU:
     case BUF_FLUSH_SINGLE_PAGE:
       return true;
-
     case BUF_FLUSH_N_TYPES:
       break;
   }
@@ -771,8 +770,7 @@ time during the call. Result might be obsolete.
 @param[in]	bpage		buffer control block, must be buf_page_in_file()
 @param[in]	flush_type	type of flush
 @return true if can flush immediately */
-static bool buf_flush_was_ready_for_flush(buf_page_t *bpage,
-                                          buf_flush_t flush_type) {
+static bool buf_flush_was_ready_for_flush(buf_page_t *bpage, buf_flush_t flush_type) {
   return buf_flush_ready_for_flush_gen(bpage, flush_type, false);
 }
 
@@ -1171,8 +1169,7 @@ void buf_flush_init_for_writing(const buf_block_t *block, byte *page,
 @param[in]	bpage		buffer block to write
 @param[in]	flush_type	type of flush
 @param[in]	sync		true if sync IO request */
-static void buf_flush_write_block_low(buf_page_t *bpage, buf_flush_t flush_type,
-                                      bool sync) {
+static void buf_flush_write_block_low(buf_page_t *bpage, buf_flush_t flush_type, bool sync) {
   page_t *frame = nullptr;
 
 #ifdef UNIV_DEBUG
@@ -1203,6 +1200,8 @@ static void buf_flush_write_block_low(buf_page_t *bpage, buf_flush_t flush_type,
 
   /* Force the log to the disk before writing the modified block */
   if (!srv_read_only_mode) {
+
+    // 获取 Page 的 newest lsn
     const lsn_t flush_to_lsn = bpage->get_newest_lsn();
 
     /* Do the check before calling log_write_up_to() because in most
@@ -1210,11 +1209,16 @@ static void buf_flush_write_block_low(buf_page_t *bpage, buf_flush_t flush_type,
     want those calls because they would have bad impact on the counter
     of calls, which is monitored to save CPU on spinning in log threads. */
 
+    // [重要]
+    // Q: 当 Buffer Pool 的脏页比率超过了限制，触发自动刷脏机制，如何处理 Redo Log 的限制?
+    // A:
+    //  在正确的逻辑下，Redo Log 必须先于 Dirty Pages 落盘, 否则在发生 Crash 的情况下，会造成数据不一致。
+    //  为了保证这个条件，Buffer Pool 的刷脏机制会在刷脏页前将 Page 的 newest_lsn 与 log_sys->flushed_to_disk_lsn 比较，
+    //  假如大于，则需要主动触发 Redo Log 的落盘，确保 redo log 提前落盘。
+    //
     if (log_sys->flushed_to_disk_lsn.load() < flush_to_lsn) {
       Wait_stats wait_stats;
-
       wait_stats = log_write_up_to(*log_sys, flush_to_lsn, true);
-
       MONITOR_INC_WAIT_STATS_EX(MONITOR_ON_LOG_, _PAGE_WRITTEN, wait_stats);
     }
   }

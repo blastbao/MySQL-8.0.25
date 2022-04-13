@@ -316,7 +316,10 @@ enum recv_addr_state {
 };
 
 /** Hashed page file address struct */
+//
+//
 struct recv_addr_t {
+
   using List = UT_LIST_BASE_NODE_T(recv_t);
 
   /** recovery state of the page */
@@ -388,13 +391,16 @@ class MetadataRecover {
 };
 
 /** Recovery system data structure */
+//
+// 这个结构体变量用来描述恢复系统运行时刻的状态。
+// InnoDB 运行时有一个该数据结构的实例 recv_sys ，是通过 recv_sys_init 来初始化的。
+
 struct recv_sys_t {
-  using Pages =
-      std::unordered_map<page_no_t, recv_addr_t *, std::hash<page_no_t>,
-                         std::equal_to<page_no_t>>;
+  using Pages = std::unordered_map<page_no_t, recv_addr_t *, std::hash<page_no_t>, std::equal_to<page_no_t>>;
 
   /** Every space has its own heap and pages that belong to it. */
   struct Space {
+
     /** Constructor
     @param[in,out]	heap	Heap to use for the log records. */
     explicit Space(mem_heap_t *heap) : m_heap(heap), m_pages() {}
@@ -411,8 +417,13 @@ struct recv_sys_t {
 
   using Missing_Ids = std::set<space_id_t>;
 
-  using Spaces = std::unordered_map<space_id_t, Space, std::hash<space_id_t>,
-                                    std::equal_to<space_id_t>>;
+
+  // Spaces 是以 space_id 做 hash 的 hash 表，表里面存放的元素是以 page_no 做 hash 的 hash 表(pages),
+  // pages 表里存放的是按照 lsn 大小排序的需要在该页上进行恢复的日志记录。
+  //
+  // std::unordered_map 内部是一个 hash table ，key 为 SpaceID, value 为 Space 。
+  // 而 Space 内部也有个 hash table , 保存相同 page_no 的日志记录。
+  using Spaces = std::unordered_map<space_id_t, Space, std::hash<space_id_t>, std::equal_to<space_id_t>>;
 
   /* Recovery encryption information */
   struct Encryption_Key {
@@ -533,6 +544,7 @@ struct recv_sys_t {
 
   /*!< mutex protecting the fields apply_log_recs, n_addrs, and the
   state field in each recv_addr struct */
+  /* 保护锁 */
   ib_mutex_t mutex;
 
   /** mutex coordinating flushing between recv_writer_thread and
@@ -540,13 +552,16 @@ struct recv_sys_t {
   ib_mutex_t writer_mutex;
 
   /** event to activate page cleaner threads */
+  /* mysql 封装的条件变量，用来通知 page cleaner 线程刷盘操作 */
   os_event_t flush_start;
 
   /** event to signal that the page cleaner has finished the request */
+  /* mysql 封装的条件变量，用来通知 page cleaner 线程停止刷盘 */
   os_event_t flush_end;
 
   /** type of the flush request. BUF_FLUSH_LRU: flush end of LRU,
   keeping free blocks.  BUF_FLUSH_LIST: flush all of blocks. */
+  /* 刷盘方式 */
   buf_flush_t flush_type;
 
 #else  /* !UNIV_HOTBACKUP */
@@ -556,18 +571,23 @@ struct recv_sys_t {
   /** This is true when log rec application to pages is allowed;
   this flag tells the i/o-handler if it should do log record
   application */
+  /* 正在应用 log record 到 page 中 */
   bool apply_log_recs;
 
   /** This is true when a log rec application batch is running */
+  /* 批量应用 log record 标志 */
   bool apply_batch_on;
 
   /** Possible incomplete last recovered log block */
+  /* 恢复时最后的块内存缓冲区 */
   byte *last_block;
 
   /** The nonaligned start address of the preceding buffer */
+  /* 最后块内存缓冲区的起始位置，因为 last_block 是 512 地址对齐的，需要这个变量记录 free 的地址位置 */
   byte *last_block_buf_start;
 
   /** Buffer for parsing log records */
+  /* 从日志块中读取的重做日志信息数据 */
   byte *buf;
 
   /** Size of the parsing buffer */
@@ -579,6 +599,7 @@ struct recv_sys_t {
   /** This is the lsn from which we were able to start parsing
   log records and adding them to the hash table; zero if a suitable
   start point not found yet */
+  /* 本次日志重做恢复起始的 lsn */
   lsn_t parse_start_lsn;
 
   /** Checkpoint lsn that was used during recovery (read from file). */
@@ -588,16 +609,20 @@ struct recv_sys_t {
   ulint bytes_to_ignore_before_checkpoint;
 
   /** The log data has been scanned up to this lsn */
+  /* 在恢复过程，将恢复日志从 log_sys->buf 解析块后存入 recv_sys->buf 的日志 lsn */
   lsn_t scanned_lsn;
 
   /** The log data has been scanned up to this checkpoint
   number (lowest 4 bytes) */
+  /* 恢复日志的 checkpoint 序号 */
   ulint scanned_checkpoint_no;
 
   /** Start offset of non-parsed log records in buf */
+  /* 恢复位置的偏移量 */
   ulint recovered_offset;
 
   /** The log records have been parsed up to this lsn */
+  /* 已经将数据恢复到 page 中或者已经将日志操作存储 addr_hash 当中的日志 lsn */
   lsn_t recovered_lsn;
 
   /** The previous value of recovered_lsn - before we parsed the last mtr.
@@ -613,6 +638,7 @@ struct recv_sys_t {
 
   /** Set when finding a corrupt log block or record, or there
   is a log parsing buffer overflow */
+  /* 是否开启日志恢复诊断 */
   bool found_corrupt_log;
 
   /** Set when an inconsistency with the file system contents
@@ -634,6 +660,7 @@ struct recv_sys_t {
   Spaces *spaces;
 
   /** Number of not processed hashed file addresses in the hash table */
+  /* spaces 中包含 recv_addr 的个数*/
   ulint n_addrs;
 
   /** Doublewrite buffer pages, destroyed after recovery completes */

@@ -5555,8 +5555,7 @@ dberr_t lock_clust_rec_modify_check_and_lock(
   }
   ut_ad(!index->table->is_temporary());
 
-  heap_no = rec_offs_comp(offsets) ? rec_get_heap_no_new(rec)
-                                   : rec_get_heap_no_old(rec);
+  heap_no = rec_offs_comp(offsets) ? rec_get_heap_no_new(rec) : rec_get_heap_no_old(rec);
 
   /* If a transaction has no explicit x-lock set on the record, set one
   for it */
@@ -5564,13 +5563,23 @@ dberr_t lock_clust_rec_modify_check_and_lock(
   lock_rec_convert_impl_to_expl(block, rec, index, offsets);
 
   {
+
+    /*
+       加锁:
+        1. global_latch
+        2. 对应 page_id 的 Shard_latch_guard.
+
+      在使用 shard lock 后, 申请 record lock 只需要获取对应 Page 的 lock_rec_hash(page_id) % SHARDS_COUNT 槽位的 mutex 即可。
+    */
     locksys::Shard_latch_guard guard{UT_LOCATION_HERE, block->get_page_id()};
     ut_ad(lock_table_has(thr_get_trx(thr), index->table, LOCK_IX));
 
-    err = lock_rec_lock(true, SELECT_ORDINARY, LOCK_X | LOCK_REC_NOT_GAP, block,
-                        heap_no, index, thr);
+    /* 尝试获取 record lock. */
+    err = lock_rec_lock(true, SELECT_ORDINARY, LOCK_X | LOCK_REC_NOT_GAP, block, heap_no, index, thr);
 
     MONITOR_INC(MONITOR_NUM_RECLOCK_REQ);
+
+    /* RAII 模式, 作用域结束即释放. */
   }
 
   ut_d(locksys::rec_queue_latch_and_validate(block, rec, index, offsets));

@@ -887,8 +887,16 @@ void buf_block_buf_fix_dec(
 /** Returns the buffer pool instance given a page id.
 @param[in]	page_id	page id
 @return buffer pool */
+//
+//
+// 通过 page id 获取所对应的 Buffer Pool 的 Instance 。
+//
+// Instance 与 Page 的对应关系很简单:
+//  page_no >> 6 然后求模: % srv_buf_pool_instances 。
+//
 UNIV_INLINE
 buf_pool_t *buf_pool_get(const page_id_t &page_id) {
+
   /* 2log of BUF_READ_AHEAD_AREA (64) */
   page_no_t ignored_page_no = page_id.page_no() >> 6;
 
@@ -915,8 +923,7 @@ buf_pool_t *buf_pool_from_array(ulint index) /*!< in: array index to get
 @param[in]	page_id		page id
 @return block, NULL if not found */
 UNIV_INLINE
-buf_page_t *buf_page_hash_get_low(buf_pool_t *buf_pool,
-                                  const page_id_t &page_id) {
+buf_page_t *buf_page_hash_get_low(buf_pool_t *buf_pool, const page_id_t &page_id) {
   buf_page_t *bpage;
 
 #ifdef UNIV_DEBUG
@@ -928,10 +935,14 @@ buf_page_t *buf_page_hash_get_low(buf_pool_t *buf_pool,
 
   /* Look for the page in the hash table */
 
-  HASH_SEARCH(hash, buf_pool->page_hash, page_id.fold(), buf_page_t *, bpage,
-              ut_ad(bpage->in_page_hash && !bpage->in_zip_hash &&
-                    buf_page_in_file(bpage)),
-              page_id == bpage->id);
+  HASH_SEARCH(hash,
+              buf_pool->page_hash,
+              page_id.fold(),
+              buf_page_t *, bpage,
+              ut_ad(bpage->in_page_hash && !bpage->in_zip_hash && buf_page_in_file(bpage)),
+              page_id == bpage->id
+              );
+
   if (bpage) {
     ut_a(buf_page_in_file(bpage));
     ut_ad(bpage->in_page_hash);

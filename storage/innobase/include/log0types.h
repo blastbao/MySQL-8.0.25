@@ -199,6 +199,11 @@ struct alignas(ut::INNODB_CACHE_LINE_SIZE) log_t {
       /** The recent written buffer.
       Protected by: locking sn not to add. */
       /* 解决并发插入 redo log buffer 后刷入 ib_logfile 存在空洞的问题. */
+      //
+      // [原理][重要]
+      // MySQL 8.0 通过直接计算每一条 redo 在 redo log Buffer 的 offset 来并发插入 redo log Buffer,
+      // 所以这里是允许 redo log Buffer 存在空洞的，而写入 ib_logfile 不允许，
+      // 所以利用 recent_written.tail 来保证在此 lsn 之前的 redo log Buffer 是不存在空洞的，从而完成 ib_logfile 的完整写入。
       Link_buf<lsn_t> recent_written;
 
   /** Used for pausing the log writer threads.
@@ -215,7 +220,20 @@ struct alignas(ut::INNODB_CACHE_LINE_SIZE) log_t {
 
       /** The recent closed buffer.
       Protected by: locking sn not to add. */
+
       /* 解决并发插入 flush_list 后确认安全的 checkpoint_lsn 的问题. */
+      //
+      // 为能安全的进行 checkpoint ，需要选择一个数据（page)已经被 flush 的 redo log 的 lsn ，因为该 lsn 之前的修改均已落盘。
+      // 因为可以并发的将脏页插入 Buffer Pool 中的 flush_list ,
+      // 所以选择所有 Buffer Pool 实例的 flush_list 中头部最小的一个 Dirty Page 的 lsn ,
+      // 与 log.recent_closed.tail() 比对选择一个较小的 lsn, 可以认为是一个安全的 checkpoint_lsn .
+      //
+      // log.recent_closed 记录着并行插入 flush_list 的 Page lsn .
+      //
+
+      // 需要注意的是 recent_closed.tail() 这个 lsn 值，表示到达该 lsn 为止，
+      // 所有的 redo log 对应的 dirty page 已经添加到 buffer pool 的 flush list 了.
+
       Link_buf<lsn_t> recent_closed;
 
   alignas(ut::INNODB_CACHE_LINE_SIZE)
@@ -245,7 +263,12 @@ struct alignas(ut::INNODB_CACHE_LINE_SIZE) log_t {
   @see @ref subsect_redo_log_write_lsn */
   MY_COMPILER_DIAGNOSTIC_POP()
   alignas(ut::INNODB_CACHE_LINE_SIZE)
+
       /* write_lsn 之前的数据已经写入系统的 Page Cache, 但不保证已经Flush. */
+      //
+      // 到达 write_lsn 为止, 之前所有的 log records 已经从 log buffer 写到 log files 了,
+      // 但是并没有保证这些 log file 已经 flush 到磁盘上了。
+      // 这个值是由log writer thread 来更新
       atomic_lsn_t write_lsn;
 
   alignas(ut::INNODB_CACHE_LINE_SIZE)
@@ -310,6 +333,9 @@ struct alignas(ut::INNODB_CACHE_LINE_SIZE) log_t {
 
       /** Up to this lsn data has been flushed to disk (fsynced). */
       /* 已经被 flush 到磁盘的 redo log LSN. */
+      //
+      // 到达 flushed_to_disk_lsn 为止, 所有的写入到 redo log 的 log records 已经 flush 到 log files 上了。
+      // 这个值是由 log flusher thread 来更新，且有 log.flushed_to_disk_lsn <= log.write_lsn 的关系。
       atomic_lsn_t flushed_to_disk_lsn;
 
   /** Padding after the frequently updated flushed_to_disk_lsn. */
@@ -604,7 +630,17 @@ struct alignas(ut::INNODB_CACHE_LINE_SIZE) log_t {
   /**
   @see @ref subsect_redo_log_available_for_checkpoint_lsn */
   MY_COMPILER_DIAGNOSTIC_POP()
+
   /* 在此 LSN 之前的所有被添加到 Buffer Pool 的 Flush List 的数据 Page 已经被 flush , 下一次 checkpoint 可以打在这个 LSN. */
+  // 与 last_checkpoint_lsn 的区别是该 lsn 尚未被真正的 checkpoint .
+  //
+  // 表示可以进行 checkpoint 的 lsn 。
+  //
+  // 到这个 lsn 为止, 所有的 redo log 对应的 dirty page 已经 flush 到 btree 上了,
+  // 因此这里我们 flush 的时候并不是顺序的 flush , 所以有可能存在有空洞的情况,
+  // 因此这个 lsn 的位置并不是最大的 redo log 已经被 flush 到 btree 的位置，而是可以作为 checkpoint 的最大的位置.
+  //
+  // 这个值是由 log checkpointer thread 来更新
   lsn_t available_for_checkpoint_lsn;
 
   /** When this is larger than the latest checkpoint, the log checkpointer
@@ -613,7 +649,10 @@ struct alignas(ut::INNODB_CACHE_LINE_SIZE) log_t {
   Read by: log_checkpointer
   Updated by: user threads (log_free_check() or for sharp checkpoint)
   Protected by: limits_mutex. */
-  /* 当前要求进行 checkpoint 的 lsn. */
+
+  //
+
+  /* 下次需要进行 checkpoint 的 lsn. */
   lsn_t requested_checkpoint_lsn;
 
   /** Maximum lsn allowed for checkpoint by dict_persist or zero.
@@ -691,7 +730,18 @@ struct alignas(ut::INNODB_CACHE_LINE_SIZE) log_t {
   /**
   @see @ref subsect_redo_log_last_checkpoint_lsn */
   MY_COMPILER_DIAGNOSTIC_POP()
+
   /* 当前的 checkpoint 的 lsn. */
+  //
+  // 到这个 lsn 为止, 所有的 btree dirty page 已经 flushed 到 disk 了, 并且这个 lsn 值已经被更新到了 ib_logfile0 这个文件去了.
+  //
+  // 这个 lsn 也是下一次 recovery 的时候开始的地方, 因为 last_checkpoint_lsn 之前的 redo log 已经保证都 flush 到 btree 中去了.
+  // 所以比这个 lsn 小的 redo log 文件已经可以删除了, 因为数据已经都 flush 到 btree data page 中去了.
+  //
+  // 这个值是由 log checkpointer thread 来更新
+  //
+  // 有：
+  //    last_checkpoint_lsn <= available_for_checkpoint_lsn <= buf_dirty_pages_added_up_to_lsn
   atomic_lsn_t last_checkpoint_lsn;
 
   /** Next checkpoint number.

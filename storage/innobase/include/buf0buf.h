@@ -1725,22 +1725,26 @@ class buf_page_t {
 
 /** The buffer control block structure */
 
+// Buffer Pool 中基本数据单元是 buf_block_t ，其中包括数据 Page 的元信息和数据等信息。
 struct buf_block_t {
   /** @name General fields */
   /** @{ */
 
   /** page information; this must be the first field, so
   that buf_pool->page_hash can point to buf_page_t or buf_block_t */
+  /* Page 的元信息，id, size 之类 */
   buf_page_t page;
 
 #ifndef UNIV_HOTBACKUP
   /** read-write lock of the buffer frame */
+  /* Page 读写锁 */
   BPageLock lock;
 
 #endif /* UNIV_HOTBACKUP */
 
   /** pointer to buffer frame which is of size UNIV_PAGE_SIZE, and aligned
   to an address divisible by UNIV_PAGE_SIZE */
+  /* Page 数据 */
   byte *frame;
 
   /** node of the decompressed LRU list; a block is in the unzip_LRU list if

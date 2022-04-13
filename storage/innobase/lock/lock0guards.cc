@@ -59,22 +59,17 @@ Global_exclusive_try_latch::~Global_exclusive_try_latch() {
 
 /* Shard_naked_latch_guard */
 
-Shard_naked_latch_guard::Shard_naked_latch_guard(ut::Location location,
-                                                 Lock_mutex &shard_mutex)
+Shard_naked_latch_guard::Shard_naked_latch_guard(ut::Location location, Lock_mutex &shard_mutex)
     : m_shard_mutex{shard_mutex} {
   ut_ad(owns_shared_global_latch());
   mutex_enter_inline(&m_shard_mutex, location);
 }
 
-Shard_naked_latch_guard::Shard_naked_latch_guard(ut::Location location,
-                                                 const dict_table_t &table)
-    : Shard_naked_latch_guard{
-          location, lock_sys->latches.table_shards.get_mutex(table)} {}
+Shard_naked_latch_guard::Shard_naked_latch_guard(ut::Location location, const dict_table_t &table)
+    : Shard_naked_latch_guard{location, lock_sys->latches.table_shards.get_mutex(table)} {}
 
-Shard_naked_latch_guard::Shard_naked_latch_guard(ut::Location location,
-                                                 const page_id_t &page_id)
-    : Shard_naked_latch_guard{
-          location, lock_sys->latches.page_shards.get_mutex(page_id)} {}
+Shard_naked_latch_guard::Shard_naked_latch_guard(ut::Location location, const page_id_t &page_id)
+    : Shard_naked_latch_guard{location, lock_sys->latches.page_shards.get_mutex(page_id)} {}
 
 Shard_naked_latch_guard::~Shard_naked_latch_guard() {
   mutex_exit(&m_shard_mutex);

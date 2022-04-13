@@ -60,18 +60,20 @@ i/o-fixed buffer blocks */
 static constexpr size_t BUF_READ_AHEAD_PEND_LIMIT = 2;
 
 /* 读取 Page, 无论同步或者异步都调用该函数. */
-ulint buf_read_page_low(dberr_t *err, bool sync, ulint type, ulint mode,
-                        const page_id_t &page_id, const page_size_t &page_size,
-                        bool unzip) {
+ulint buf_read_page_low(dberr_t *err,
+                        bool sync,
+                        ulint type,
+                        ulint mode,
+                        const page_id_t &page_id,
+                        const page_size_t &page_size,
+                        bool unzip
+                        ) {
   buf_page_t *bpage;
 
   *err = DB_SUCCESS;
 
-  if (page_id.space() == TRX_SYS_SPACE &&
-      dblwr::v1::is_inside(page_id.page_no())) {
-    ib::error(ER_IB_MSG_139)
-        << "Trying to read legacy doublewrite buffer page " << page_id;
-
+  if (page_id.space() == TRX_SYS_SPACE && dblwr::v1::is_inside(page_id.page_no())) {
+    ib::error(ER_IB_MSG_139)  << "Trying to read legacy doublewrite buffer page " << page_id;
     return (0);
   }
 
@@ -99,9 +101,14 @@ ulint buf_read_page_low(dberr_t *err, bool sync, ulint type, ulint mode,
   }
 
   DBUG_PRINT("ib_buf",
-             ("read page %u:%u size=%u unzip=%u,%s", (unsigned)page_id.space(),
-              (unsigned)page_id.page_no(), (unsigned)page_size.physical(),
-              (unsigned)unzip, sync ? "sync" : "async"));
+             ("read page %u:%u size=%u unzip=%u,%s",
+                (unsigned)page_id.space(),
+                (unsigned)page_id.page_no(),
+                (unsigned)page_size.physical(),
+                (unsigned)unzip,
+                sync ? "sync" : "async"
+             )
+            );
 
   ut_ad(buf_page_in_file(bpage));
   ut_ad(!mutex_own(&buf_pool_from_bpage(bpage)->LRU_list_mutex));
@@ -122,8 +129,7 @@ ulint buf_read_page_low(dberr_t *err, bool sync, ulint type, ulint mode,
 
   IORequest request(type | IORequest::READ);
 
-  *err = fil_io(request, sync, page_id, page_size, 0, page_size.physical(), dst,
-                bpage);
+  *err = fil_io(request, sync, page_id, page_size, 0, page_size.physical(), dst, bpage);
 
   if (sync) {
     thd_wait_end(nullptr);
@@ -148,8 +154,7 @@ ulint buf_read_page_low(dberr_t *err, bool sync, ulint type, ulint mode,
   return (1);
 }
 
-ulint buf_read_ahead_random(const page_id_t &page_id,
-                            const page_size_t &page_size, bool inside_ibuf) {
+ulint buf_read_ahead_random(const page_id_t &page_id, const page_size_t &page_size, bool inside_ibuf) {
   buf_pool_t *buf_pool = buf_pool_get(page_id);
   ulint recent_blocks = 0;
   ulint ibuf_mode;

@@ -354,8 +354,7 @@ on the io_type */
 /** Registers a chunk to buf_pool_chunk_map
 @param[in]	chunk	chunk of buffers */
 static void buf_pool_register_chunk(buf_chunk_t *chunk) {
-  buf_chunk_map_reg->insert(
-      buf_pool_chunk_map_t::value_type(chunk->blocks->frame, chunk));
+  buf_chunk_map_reg->insert(buf_pool_chunk_map_t::value_type(chunk->blocks->frame, chunk));
 }
 
 lsn_t buf_pool_get_oldest_modification_approx(void) {
@@ -981,12 +980,17 @@ void buf_pool_update_madvise() {
 /** Allocates a chunk of buffer frames. If called for an existing buf_pool, its
  free_list_mutex must be locked.
  @return chunk, or NULL on failure */
+//
+//   - Chunk 的初始化, 使用 os_mem_alloc_large() 分配内存
+//   - 初始化 buf_block_t , 每一个 Block 包含 block->frame 数据页和 block->page 页信息管理
+//   - 将每一个 Block 的 Page 结构即 block->page 加入 buf_pool->free 链表.
 static buf_chunk_t *buf_chunk_init(
     buf_pool_t *buf_pool, /*!< in: buffer pool instance */
     buf_chunk_t *chunk,   /*!< out: chunk of buffers */
     ulonglong mem_size,   /*!< in: requested size in bytes */
     std::mutex *mutex)    /*!< in,out: Mutex protecting chunk map. */
 {
+
   buf_block_t *block;
   byte *frame;
   ulint i;
@@ -997,9 +1001,7 @@ static buf_chunk_t *buf_chunk_init(
   although it already should be. */
   mem_size = ut_2pow_round(mem_size, UNIV_PAGE_SIZE);
   /* Reserve space for the block descriptors. */
-  mem_size += ut_2pow_round(
-      (mem_size / UNIV_PAGE_SIZE) * (sizeof *block) + (UNIV_PAGE_SIZE - 1),
-      UNIV_PAGE_SIZE);
+  mem_size += ut_2pow_round((mem_size / UNIV_PAGE_SIZE) * (sizeof *block) + (UNIV_PAGE_SIZE - 1), UNIV_PAGE_SIZE);
 
   DBUG_EXECUTE_IF("ib_buf_chunk_init_fails", return (nullptr););
 
@@ -1010,8 +1012,7 @@ static buf_chunk_t *buf_chunk_init(
 #ifdef HAVE_LIBNUMA
   if (srv_numa_interleave) {
     struct bitmask *numa_nodes = numa_get_mems_allowed();
-    int st = mbind(chunk->mem, chunk->mem_size(), MPOL_INTERLEAVE,
-                   numa_nodes->maskp, numa_nodes->size, MPOL_MF_MOVE);
+    int st = mbind(chunk->mem, chunk->mem_size(), MPOL_INTERLEAVE, numa_nodes->maskp, numa_nodes->size, MPOL_MF_MOVE);
     if (st != 0) {
       ib::warn(ER_IB_MSG_54) << "Failed to set NUMA memory policy of"
                                 " buffer pool page frames to MPOL_INTERLEAVE"
@@ -1082,6 +1083,9 @@ static buf_chunk_t *buf_chunk_init(
 #endif /* PFS_GROUP_BUFFER_SYNC */
   return (chunk);
 }
+
+
+
 
 #ifdef UNIV_DEBUG
 /** Finds a block in the given buffer chunk that points to a
@@ -1201,9 +1205,9 @@ static void buf_pool_set_sizes(void) {
 @param[in]	instance_no   id of the instance
 @param[in,out]  mutex     Mutex to protect common data structures
 @param[out] err           DB_SUCCESS if all goes well */
-static void buf_pool_create(buf_pool_t *buf_pool, ulint buf_pool_size,
-                            ulint instance_no, std::mutex *mutex,
-                            dberr_t &err) {
+//
+// 初始化每个 Instance, 即初始化链表, 创建相关 mutex , 创建 Chunk 等
+static void buf_pool_create(buf_pool_t *buf_pool, ulint buf_pool_size, ulint instance_no, std::mutex *mutex, dberr_t &err) {
   ulint i;
   ulint chunk_size;
   buf_chunk_t *chunk;
@@ -1448,6 +1452,9 @@ static void buf_pool_free() {
 @param[in]  total_size    Size of the total pool in bytes.
 @param[in]  n_instances   Number of buffer pool instances to create.
 @return DB_SUCCESS if success, DB_ERROR if not enough memory or error */
+//
+// Buffer Pool 初始化入口函数
+
 dberr_t buf_pool_init(ulint total_size, ulint n_instances) {
   ulint i;
   const ulint size = total_size / n_instances;
@@ -1466,8 +1473,7 @@ dberr_t buf_pool_init(ulint total_size, ulint n_instances) {
 
   buf_pool_resizing = false;
 
-  buf_pool_ptr =
-      (buf_pool_t *)ut_zalloc_nokey(n_instances * sizeof *buf_pool_ptr);
+  buf_pool_ptr = (buf_pool_t *)ut_zalloc_nokey(n_instances * sizeof *buf_pool_ptr);
 
   buf_chunk_map_reg = UT_NEW_NOKEY(buf_pool_chunk_map_t());
 
@@ -1533,12 +1539,20 @@ dberr_t buf_pool_init(ulint total_size, ulint n_instances) {
   }
 
   buf_pool_set_sizes();
+
+  // [原理]
+  // LRU_list 分为 young 和 old 两部分, young 部分存储经常被使用的热点 Page，
+  // 新读入的 Page 默认被加在 old 部分，只有满足一定条件后，才被移到 young 上，
+  // 主要是为了预读的数据页和全表扫描污染 Buffer Pool。
+  //
+  // LRU_old 作为一个游标来作为滑动的指针，可以由 buf_LRU_old_ratio_update() 来更新 。
+  //
+  // 初始化阶段最后会设定 LRU 的比率参数: buf_LRU_old_ratio_update(100 * 3 / 8, FALSE) 。
   buf_LRU_old_ratio_update(100 * 3 / 8, FALSE);
 
   btr_search_sys_create(buf_pool_get_curr_size() / sizeof(void *) / 64);
 
-  buf_stat_per_index =
-      UT_NEW(buf_stat_per_index_t(), mem_key_buf_stat_per_index_t);
+  buf_stat_per_index = UT_NEW(buf_stat_per_index_t(), mem_key_buf_stat_per_index_t);
 
   return (DB_SUCCESS);
 }
@@ -1597,8 +1611,7 @@ static bool buf_page_realloc(buf_pool_t *buf_pool, buf_block_t *block) {
     if (block->page.zip.data != nullptr) {
       ut_ad(block->in_unzip_LRU_list);
       ut_d(new_block->in_unzip_LRU_list = TRUE);
-      UNIV_MEM_DESC(&new_block->page.zip.data,
-                    page_zip_get_size(&new_block->page.zip));
+      UNIV_MEM_DESC(&new_block->page.zip.data, page_zip_get_size(&new_block->page.zip));
 
       auto prev_block = UT_LIST_GET_PREV(unzip_LRU, block);
       UT_LIST_REMOVE(buf_pool->unzip_LRU, block);
@@ -1624,8 +1637,7 @@ static bool buf_page_realloc(buf_pool_t *buf_pool, buf_block_t *block) {
     ulint fold = block->page.id.fold();
     ut_ad(fold == new_block->page.id.fold());
     HASH_DELETE(buf_page_t, hash, buf_pool->page_hash, fold, (&block->page));
-    HASH_INSERT(buf_page_t, hash, buf_pool->page_hash, fold,
-                (&new_block->page));
+    HASH_INSERT(buf_page_t, hash, buf_pool->page_hash, fold, (&new_block->page));
 
     ut_ad(new_block->page.in_page_hash);
 
@@ -2663,10 +2675,8 @@ static void buf_relocate(buf_page_t *bpage, buf_page_t *dpage) {
     /* buf_pool->LRU_old must be the first item in the LRU list
     whose "old" flag is set. */
     ut_a(buf_pool->LRU_old->old);
-    ut_a(!UT_LIST_GET_PREV(LRU, buf_pool->LRU_old) ||
-         !UT_LIST_GET_PREV(LRU, buf_pool->LRU_old)->old);
-    ut_a(!UT_LIST_GET_NEXT(LRU, buf_pool->LRU_old) ||
-         UT_LIST_GET_NEXT(LRU, buf_pool->LRU_old)->old);
+    ut_a(!UT_LIST_GET_PREV(LRU, buf_pool->LRU_old) || !UT_LIST_GET_PREV(LRU, buf_pool->LRU_old)->old);
+    ut_a(!UT_LIST_GET_NEXT(LRU, buf_pool->LRU_old) || UT_LIST_GET_NEXT(LRU, buf_pool->LRU_old)->old);
   } else {
     /* Check that the "old" flag is consistent in
     the block and its neighbours. */
@@ -2690,8 +2700,7 @@ static void buf_relocate(buf_page_t *bpage, buf_page_t *dpage) {
 void HazardPointer::set(buf_page_t *bpage) {
   ut_ad(mutex_own(m_mutex));
   ut_ad(!bpage || buf_pool_from_bpage(bpage) == m_buf_pool);
-  ut_ad(!bpage || buf_page_in_file(bpage) ||
-        buf_page_get_state(bpage) == BUF_BLOCK_REMOVE_HASH);
+  ut_ad(!bpage || buf_page_in_file(bpage) || buf_page_get_state(bpage) == BUF_BLOCK_REMOVE_HASH);
 
   m_hp = bpage;
 }
@@ -2769,17 +2778,13 @@ buf_page_t *LRUItr::start() {
 @param[in]	buf_pool	buffer pool instance
 @param[in]	bpage		block
 @return true if a sentinel for a buffer pool watch, false if not */
-ibool buf_pool_watch_is_sentinel(const buf_pool_t *buf_pool,
-                                 const buf_page_t *bpage) {
+ibool buf_pool_watch_is_sentinel(const buf_pool_t *buf_pool, const buf_page_t *bpage) {
   /* We must own the appropriate hash lock. */
   ut_ad(buf_page_hash_lock_held_s_or_x(buf_pool, bpage));
   ut_ad(buf_page_in_file(bpage));
 
-  if (bpage < &buf_pool->watch[0] ||
-      bpage >= &buf_pool->watch[BUF_POOL_WATCH_SIZE]) {
-    ut_ad(buf_page_get_state(bpage) != BUF_BLOCK_ZIP_PAGE ||
-          bpage->zip.data != nullptr);
-
+  if (bpage < &buf_pool->watch[0] || bpage >= &buf_pool->watch[BUF_POOL_WATCH_SIZE]) {
+    ut_ad(buf_page_get_state(bpage) != BUF_BLOCK_ZIP_PAGE || bpage->zip.data != nullptr);
     return (FALSE);
   }
 
@@ -2801,12 +2806,16 @@ static buf_page_t *buf_pool_watch_set(const page_id_t &page_id,
                                       rw_lock_t **hash_lock) {
   buf_page_t *bpage;
   ulint i;
+
+
+  // 通过 page id 获取所对应的 Buffer Pool 的 Instance 。
   buf_pool_t *buf_pool = buf_pool_get(page_id);
 
   ut_ad(*hash_lock == buf_page_hash_lock_get(buf_pool, page_id));
 
   ut_ad(rw_lock_own(*hash_lock, RW_LOCK_X));
 
+  // 通过 page_id 的哈希 page_hash 能快速的从 Instance 中找到该 Page 。
   bpage = buf_page_hash_get_low(buf_pool, page_id);
 
   if (bpage != nullptr) {
@@ -2872,8 +2881,7 @@ static buf_page_t *buf_pool_watch_set(const page_id_t &page_id,
         bpage->buf_pool_index = buf_pool_index(buf_pool);
 
         ut_d(bpage->in_page_hash = TRUE);
-        HASH_INSERT(buf_page_t, hash, buf_pool->page_hash, page_id.fold(),
-                    bpage);
+        HASH_INSERT(buf_page_t, hash, buf_pool->page_hash, page_id.fold(), bpage);
 
         mutex_exit(&buf_pool->LRU_list_mutex);
 
@@ -4257,20 +4265,22 @@ buf_block_t *Buf_fetch<T>::single_page() {
   return (block);
 }
 
+
+
+//
 buf_block_t *buf_page_get_gen(const page_id_t &page_id,
                               const page_size_t &page_size, ulint rw_latch,
                               buf_block_t *guess, Page_fetch mode,
                               const char *file, ulint line, mtr_t *mtr,
                               bool dirty_with_no_latch) {
 #ifdef UNIV_DEBUG
+
   ut_ad(mtr->is_active());
+  ut_ad(rw_latch == RW_S_LATCH || rw_latch == RW_X_LATCH || rw_latch == RW_SX_LATCH || rw_latch == RW_NO_LATCH);
+  ut_ad(!ibuf_inside(mtr) || ibuf_page_low(page_id, page_size, false, file, line, nullptr));
 
-  ut_ad(rw_latch == RW_S_LATCH || rw_latch == RW_X_LATCH ||
-        rw_latch == RW_SX_LATCH || rw_latch == RW_NO_LATCH);
 
-  ut_ad(!ibuf_inside(mtr) ||
-        ibuf_page_low(page_id, page_size, false, file, line, nullptr));
-
+  //
   switch (mode) {
     case Page_fetch::NO_LATCH:
       ut_ad(rw_latch == RW_NO_LATCH);
@@ -4283,19 +4293,20 @@ buf_block_t *buf_page_get_gen(const page_id_t &page_id,
     case Page_fetch::POSSIBLY_FREED:
       break;
     default:
-      ib::fatal(ER_IB_ERR_UNKNOWN_PAGE_FETCH_MODE)
-          << "Unknown fetch mode: " << (int)mode;
+      ib::fatal(ER_IB_ERR_UNKNOWN_PAGE_FETCH_MODE) << "Unknown fetch mode: " << (int)mode;
       ut_error;
   }
 
   bool found;
-  const page_size_t &space_page_size =
-      fil_space_get_page_size(page_id.space(), &found);
+  const page_size_t &space_page_size = fil_space_get_page_size(page_id.space(), &found);
 
   ut_ad(page_size.equals_to(space_page_size));
 #endif /* UNIV_DEBUG */
 
+
+  //
   if (mode == Page_fetch::NORMAL && !fsp_is_system_temporary(page_id.space())) {
+
     Buf_fetch_normal fetch(page_id, page_size);
 
     fetch.m_rw_latch = rw_latch;
@@ -4309,6 +4320,7 @@ buf_block_t *buf_page_get_gen(const page_id_t &page_id,
     return (fetch.single_page());
 
   } else {
+
     Buf_fetch_other fetch(page_id, page_size);
 
     fetch.m_rw_latch = rw_latch;
@@ -4323,9 +4335,13 @@ buf_block_t *buf_page_get_gen(const page_id_t &page_id,
   }
 }
 
-bool buf_page_optimistic_get(ulint rw_latch, buf_block_t *block,
-                             uint64_t modify_clock, Page_fetch fetch_mode,
-                             const char *file, ulint line, mtr_t *mtr) {
+bool buf_page_optimistic_get(ulint rw_latch,
+                             buf_block_t *block,
+                             uint64_t modify_clock,
+                             Page_fetch fetch_mode,
+                             const char *file,
+                             ulint line,
+                             mtr_t *mtr) {
   ut_ad(mtr->is_active());
   ut_ad(rw_latch == RW_S_LATCH || rw_latch == RW_X_LATCH);
 
@@ -4700,13 +4716,18 @@ and the lock released later.
 @param[in]	page_size		page size
 @param[in]	unzip			TRUE=request uncompressed page
 @return pointer to the block or NULL */
-buf_page_t *buf_page_init_for_read(dberr_t *err, ulint mode,
+buf_page_t *buf_page_init_for_read(dberr_t *err,
+                                   ulint mode,
                                    const page_id_t &page_id,
-                                   const page_size_t &page_size, ibool unzip) {
+                                   const page_size_t &page_size,
+                                   ibool unzip
+                                   ) {
   buf_block_t *block;
   rw_lock_t *hash_lock;
   mtr_t mtr;
   void *data = nullptr;
+
+  // 通过 page id 获取所对应的 Buffer Pool 的 Instance 。
   buf_pool_t *buf_pool = buf_pool_get(page_id);
 
   ut_ad(buf_pool);
@@ -4791,6 +4812,7 @@ buf_page_t *buf_page_init_for_read(dberr_t *err, ulint mode,
 
     buf_page_mutex_enter(block);
 
+    // 在 Buffer Pool 中初始化一个 Page, 将该 Block 加至 old 部分。
     buf_page_init(buf_pool, page_id, page_size, block);
 
     /* Note: We are using the hash_lock for protection. This is
@@ -4907,9 +4929,40 @@ func_exit:
   return (bpage);
 }
 
+// 申请数据页 Block —— buf_page_create()
+//
+//   - 通过 buf_pool_t 的 free_list 中查找空闲的 buf_block_t( buf_LRU_get_free_block() ).
+//
+//   - 假如 free_list 中为空，即没有空闲的 Block, 则需要去 LRU_list 中寻找.
+//
+//   - LRU_list 搜索策略:
+//
+//      - 第一次搜索:
+//          假如 buf_pool->try_LRU_scan 被设置了 true ，则通过 lru_scan_itr 从尾部往前搜索 100 (BUF_LRU_SEARCH_SCAN_THRESHOLD) 个,
+//          假如找到可以换出的 Page ，放入 free_list .
+//          假如没有找到可以换出的 Page， 则需要从 LRU_list 尾部选择一个脏页进行刷盘, 即 buf_flush_page() ,
+//          将其从 page_hash 和 LRU 中移除，然后放入 free_list .
+//      - 第二次搜索:
+//          需要搜索整个 LRU_list , 其余的策略与第一次搜索一致.
+//      - 第三次搜索及以后:
+//          仍然搜索整个 LRU_list , 但每次 Sleep 10ms .
+//      - 当迭代次数超过 20 次，会打印一条频繁获取不到空闲 Page 的 log.
+//
+//   - 判断 Buffer Pool 是否存在该 Block, 假如存在直接返回.
+//
+//   - 否则需要通过 buf_page_init() 初始化 Block 数据结构，将查找到的空闲的 Block 的信息替换为需要申请的这个 Block, 插入 page_hash .
+//
+//   - 将该 Block 加入 LRU_list 的 LRU_young 部分( buf_page_make_young_if_needed()) .
+//     这里引入了时间的限制, 即假如第二次的访问时间必须超过 buf_LRU_old_threshold_ms 才会将其移动到 young 部分.
+//
+
+//
+//
 buf_block_t *buf_page_create(const page_id_t &page_id,
                              const page_size_t &page_size,
-                             rw_lock_type_t rw_latch, mtr_t *mtr) {
+                             rw_lock_type_t rw_latch,
+                             mtr_t *mtr
+                             ) {
   buf_frame_t *frame;
   buf_block_t *block;
   buf_block_t *free_block = nullptr;

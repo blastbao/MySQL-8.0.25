@@ -448,6 +448,9 @@ dberr_t SysTablespace::create_file(Datafile &file) {
 /** Open a data file.
 @param[in,out]	file	data file object
 @return DB_SUCCESS or error code */
+
+//
+//
 dberr_t SysTablespace::open_file(Datafile &file) {
   dberr_t err = DB_SUCCESS;
 
@@ -513,43 +516,43 @@ dberr_t SysTablespace::open_file(Datafile &file) {
 @param[out]	flushed_lsn	the value of FIL_PAGE_FILE_FLUSH_LSN
 @return DB_SUCCESS or error code */
 dberr_t SysTablespace::read_lsn_and_check_flags(lsn_t *flushed_lsn) {
+
   /* Only relevant for the system tablespace. */
   ut_ad(space_id() == TRX_SYS_SPACE);
 
+  // 获取首个 ibdata 文件
   files_t::iterator it = m_files.begin();
 
   ut_a(it->m_exists);
   ut_ad(it->m_handle.m_file != OS_FILE_CLOSED);
 
-  dberr_t err =
-      it->read_first_page(m_ignore_read_only ? false : srv_read_only_mode);
-
+  // 读取第一个 page
+  dberr_t err = it->read_first_page(m_ignore_read_only ? false : srv_read_only_mode);
   if (err != DB_SUCCESS) {
     return (err);
   }
 
   ut_a(it->order() == 0);
 
+  // 加载 double write buffer
   err = recv_sys->dblwr->load();
-
   if (err != DB_SUCCESS) {
     return (err);
   }
 
   /* Check the contents of the first page of the first datafile. */
   for (int retry = 0; retry < 2; ++retry) {
+    // 验证 page
     err = it->validate_first_page(it->m_space_id, flushed_lsn, false);
-
-    if (err != DB_SUCCESS &&
-        (retry == 1 || it->restore_from_doublewrite(0) != DB_SUCCESS)) {
+    // 从 double_write_buffer 中恢复，再试一次
+    if (err != DB_SUCCESS && (retry == 1 || it->restore_from_doublewrite(0) != DB_SUCCESS)) {
       it->close();
-
       return (err);
     }
   }
 
-  /* Make sure the tablespace space ID matches the
-  space ID on the first page of the first datafile. */
+
+  /* Make sure the tablespace space ID matches the space ID on the first page of the first datafile. */
   if (space_id() != it->m_space_id) {
     ib::error(ER_IB_MSG_444)
         << "The " << name() << " data file '" << it->name()
@@ -557,13 +560,11 @@ dberr_t SysTablespace::read_lsn_and_check_flags(lsn_t *flushed_lsn) {
         << it->m_space_id << " was found";
 
     it->close();
-
     return (err);
   }
 
   /* The flags of srv_sys_space do not have SDI Flag set.
-  Update the flags of system tablespace to indicate the presence
-  of SDI */
+  Update the flags of system tablespace to indicate the presence of SDI */
   set_flags(it->flags());
 
   it->close();
@@ -796,7 +797,39 @@ dberr_t SysTablespace::check_file_spec(bool create_new_db,
 @param[out] sum_new_sizes	sum of sizes of the new files added
 @param[out] flush_lsn		FIL_PAGE_FILE_FLUSH_LSN of first file
 @return DB_SUCCESS or error code */
-dberr_t SysTablespace::open_or_create(bool is_temp, bool create_new_db,
+//
+//
+// 打开系统表空间
+//
+// 数据库启动后，InnoDB 会通过 read_lsn_and_check_flags() 函数读取系统表空间中 flushed_lsn ，
+// 这一个 LSN 只在系统表空间的第一个页中存在，而且只有在正常关闭的时候写入。
+//
+// 系统正常关闭时，会调用 srv_shutdown_log() -> fil_write_flushed_lsn() ，
+// 也就是在执行一次 sharp checkpoint 之后，将 LSN 写入。
+//
+// 另外需要注意的是，写 flushed_lsn 时会同时写入到 Double Write Buffer，
+// 如果 flushed_lsn 对应的页损坏，则可以从 dbwl 中进行恢复。
+//
+// 接下来，InnoDB 会通过 redo-log 日志找到最近一次提交的 checkpoint，读取该 checkpoint 对应的 LSN 。
+// 其中，checkpoint 信息会保存在 redo-log 的第一个文件中，在两个固定偏移中轮流写入；
+// 所以，需要同时读取两个，并比较获取较大的一个值。
+//
+// 比较获得的 flushed_lsn 以及 checkpoint_lsn ，如果两者相同，则说明正常关闭；否则，就需要进行故障恢复。
+//
+//
+// 执行链路：
+//   |--> srv_start
+//   |    |--> SysTablespace::open_or_create  //打开系统表空间，并获取flushed_lsn
+//   |    |    |--> read_lsn_and_check_flags
+//   |    |    |    |--> read_first_page
+//   |    |    |    |--> //将双写缓存加载到内存中，如果 ibdata 日志损坏，则通过 dblwr 恢复
+//   |    |    |    |--> buf_dblwr_init_or_load_pages
+//   |    |    |    |--> validate_first_page   //校验第一个页是否正常，并读取flushed_lsn
+//   |    |    |    |    |--> mach_read_from_8 //读取LSN，偏移为FIL_PAGE_FILE_FLUSH_LSN
+//   |    |    |    |--> restore_from_doublewrite //如果有异常，则从dblwr恢复
+//
+dberr_t SysTablespace::open_or_create(bool is_temp,
+                                      bool create_new_db,
                                       page_no_t *sum_new_sizes,
                                       lsn_t *flush_lsn) {
   dberr_t err = DB_SUCCESS;
@@ -813,8 +846,13 @@ dberr_t SysTablespace::open_or_create(bool is_temp, bool create_new_db,
 
   ut_ad(begin->order() == 0);
 
+
+  // 遍历 system tablespace 的所有文件(m_files)
   for (files_t::iterator it = begin; it != end; ++it) {
+
+    // 存在则打开
     if (it->m_exists) {
+
       err = open_file(*it);
 
       /* For new raw device increment new size. */
@@ -822,22 +860,23 @@ dberr_t SysTablespace::open_or_create(bool is_temp, bool create_new_db,
         *sum_new_sizes += it->m_size;
       }
 
+    // 不存在创建
     } else {
+
       err = create_file(*it);
 
       if (sum_new_sizes) {
         *sum_new_sizes += it->m_size;
       }
 
-      /* Set the correct open flags now that we have
-      successfully created the file. */
+      /* Set the correct open flags now that we have successfully created the file. */
       if (err == DB_SUCCESS) {
-        /* We ignore new_db OUT parameter here
-        as the information is known at this stage */
+        /* We ignore new_db OUT parameter here as the information is known at this stage */
         file_found(*it);
       }
     }
 
+    // 报错返回
     if (err != DB_SUCCESS) {
       return (err);
     }
@@ -850,12 +889,9 @@ dberr_t SysTablespace::open_or_create(bool is_temp, bool create_new_db,
 
     if (fil_fusionio_enable_atomic_write(it->m_handle)) {
       if (dblwr::enabled) {
-        ib::info(ER_IB_MSG_456) << "FusionIO atomic IO enabled,"
-                                   " disabling the double write buffer";
-
+        ib::info(ER_IB_MSG_456) << "FusionIO atomic IO enabled," << " disabling the double write buffer";
         dblwr::enabled = false;
       }
-
       it->m_atomic_write = true;
     } else {
       it->m_atomic_write = false;
@@ -865,9 +901,10 @@ dberr_t SysTablespace::open_or_create(bool is_temp, bool create_new_db,
 #endif /* !NO_FALLOCATE && UNIV_LINUX*/
   }
 
+  // 如果不是第一次创建、且 flush_lsn 合法，就读取 flush_lsn 并返回。
   if (!create_new_db && flush_lsn) {
-    /* Validate the header page in the first datafile
-    and read LSNs fom the others. */
+    /* Validate the header page in the first datafile and read LSNs fom the others. */
+    // 验证第一个 ibdata 文件的首个 Page 是否合法，并从其中读取 flush_lsn 。
     err = read_lsn_and_check_flags(flush_lsn);
     if (err != DB_SUCCESS) {
       return (err);
@@ -877,32 +914,34 @@ dberr_t SysTablespace::open_or_create(bool is_temp, bool create_new_db,
   /* Close the curent handles, add space and file info to the
   fil_system cache and the Data Dictionary, and re-open them
   in file_system cache so that they stay open until shutdown. */
+
+  // 打开文件之后，将会把打开的文件进行缓存，而 InnoDB 会将所有的 tablespace 缓存在 fil_system 中。
+  // 这里要注意的是在将文件放入缓存之前会先关闭，因为最终所有的文件都是通过 space(fil_space_t) 对象来操作的。
   ulint node_counter = 0;
   for (files_t::iterator it = begin; it != end; ++it) {
+
+    // 先关闭
     it->close();
     it->m_exists = true;
 
+    // 创建 space , 后续所有对于 space 的操作都是通过 fil_space_t 来进行的。
+    //
+    // 这里的判断条件，是为了确保只执行一次。
     if (it == begin) {
       /* First data file. */
-
-      /* Create the tablespace entry for the multi-file
-      tablespace in the tablespace manager. */
-      space =
-          fil_space_create(name(), space_id(), flags(),
-                           is_temp ? FIL_TYPE_TEMPORARY : FIL_TYPE_TABLESPACE);
+      /* Create the tablespace entry for the multi-file tablespace in the tablespace manager. */
+      space = fil_space_create(name(), space_id(), flags(), is_temp ? FIL_TYPE_TEMPORARY : FIL_TYPE_TABLESPACE);
     }
 
     ut_ad(fil_validate());
 
-    page_no_t max_size =
-        (++node_counter == m_files.size()
-             ? (m_last_file_size_max == 0 ? PAGE_NO_MAX : m_last_file_size_max)
-             : it->m_size);
+    page_no_t max_size = (++node_counter == m_files.size() ? (m_last_file_size_max == 0 ? PAGE_NO_MAX : m_last_file_size_max) : it->m_size);
 
     /* Add the datafile to the fil_system cache. */
-    if (!fil_node_create(it->m_filepath, it->m_size, space,
-                         it->m_type != SRV_NOT_RAW, it->m_atomic_write,
-                         max_size)) {
+    // 将当前的文件加入到创建好的 space 中并且缓存。
+    //
+    // 在 InnoDB 中所有的数据文件都会统一管理，其中的 redo/undo 表空间会做特殊处理，而其他的 tablespace 则会根据他们的 space id 进行缓存。
+    if (!fil_node_create(it->m_filepath, it->m_size, space, it->m_type != SRV_NOT_RAW, it->m_atomic_write, max_size)) {
       err = DB_ERROR;
       break;
     }

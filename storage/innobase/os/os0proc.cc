@@ -88,17 +88,15 @@ void *os_mem_alloc_large(ulint *n) {
   ut_ad(ut_is_2pow(os_large_page_size));
   size = ut_2pow_round(*n + (os_large_page_size - 1), os_large_page_size);
 
+  // 对于支持大页的 Linux 系统，InnoDB 使用 shmget() 申请共享内存。
   shmid = shmget(IPC_PRIVATE, (size_t)size, SHM_HUGETLB | SHM_R | SHM_W);
   if (shmid < 0) {
-    ib::warn(ER_IB_MSG_852)
-        << "Failed to allocate " << size << " bytes. errno " << errno;
+    ib::warn(ER_IB_MSG_852) << "Failed to allocate " << size << " bytes. errno " << errno;
     ptr = nullptr;
   } else {
     ptr = shmat(shmid, nullptr, 0);
     if (ptr == (void *)-1) {
-      ib::warn(ER_IB_MSG_853) << "Failed to attach shared memory segment,"
-                                 " errno "
-                              << errno;
+      ib::warn(ER_IB_MSG_853) << "Failed to attach shared memory segment, errno " << errno;
       ptr = nullptr;
     }
 
@@ -145,13 +143,11 @@ skip:
   /* Align block size to system page size */
   ut_ad(ut_is_2pow(size));
   size = *n = ut_2pow_round(*n + (size - 1), size);
-  ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | OS_MAP_ANON,
-             -1, 0);
+
+  // 对于不支持大页的 Linux 系统，InnoDB 使用 mmap() 申请指定大小的匿名页内存块。
+  ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | OS_MAP_ANON, -1, 0);
   if (UNIV_UNLIKELY(ptr == (void *)-1)) {
-    ib::error(ER_IB_MSG_856) << "mmap(" << size
-                             << " bytes) failed;"
-                                " errno "
-                             << errno;
+    ib::error(ER_IB_MSG_856) << "mmap(" << size  << " bytes) failed;" << " errno " << errno;
     ptr = nullptr;
   } else {
     os_total_large_mem_allocated.fetch_add(size);

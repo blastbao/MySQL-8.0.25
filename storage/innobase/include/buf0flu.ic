@@ -101,13 +101,18 @@ void buf_flush_note_modification(
     block->page.reset_flush_observer();
   }
 
+  // 非脏页
   if (!block->page.is_dirty()) {
+    // 获取 block 关联的 buffer pool
     auto buf_pool = buf_pool_from_block(block);
-
+    // 将修改过的 block 插入 flush list
     buf_flush_insert_into_flush_list(buf_pool, block, start_lsn);
+
+  // 脏页，但是 start_lsn 非 0 ，意味着此前已经加入到 flush list ，需重复插入。
   } else if (start_lsn != 0) {
     ut_ad(block->page.get_oldest_lsn() <= start_lsn);
   }
+
 
   buf_page_mutex_exit(block);
 

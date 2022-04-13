@@ -5233,8 +5233,7 @@ static MY_ATTRIBUTE((warn_unused_result)) dberr_t
 @param[out]	err		DB_SUCCESS or error code
 @return number of bytes read, -1 if error */
 static MY_ATTRIBUTE((warn_unused_result)) ssize_t
-    os_file_pread(IORequest &type, os_file_t file, void *buf, ulint n,
-                  os_offset_t offset, dberr_t *err) {
+    os_file_pread(IORequest &type, os_file_t file, void *buf, ulint n, os_offset_t offset, dberr_t *err) {
 #ifdef UNIV_HOTBACKUP
   static meb::Mutex meb_mutex;
 
@@ -5268,20 +5267,30 @@ static MY_ATTRIBUTE((warn_unused_result)) ssize_t
 @param[in]	exit_on_err	if true then exit on error
 @return DB_SUCCESS or error code */
 static MY_ATTRIBUTE((warn_unused_result)) dberr_t
-    os_file_read_page(IORequest &type, const char *file_name, os_file_t file,
-                      void *buf, os_offset_t offset, ulint n, ulint *o,
-                      bool exit_on_err) {
+    os_file_read_page(IORequest &type,
+                      const char *file_name,
+                      os_file_t file,
+                      void *buf,
+                      os_offset_t offset,
+                      ulint n,
+                      ulint *o,
+                      bool exit_on_err
+                      ) {
+
+
   dberr_t err(DB_ERROR_UNSET);
 
 #ifdef UNIV_HOTBACKUP
   static meb::Mutex meb_mutex;
-
   meb_mutex.lock();
 #endif /* UNIV_HOTBACKUP */
+
   os_bytes_read_since_printout += n;
+
 #ifdef UNIV_HOTBACKUP
   meb_mutex.unlock();
 #endif /* UNIV_HOTBACKUP */
+
 
   ut_ad(type.validate());
   ut_ad(n > 0);
@@ -5297,18 +5306,13 @@ static MY_ATTRIBUTE((warn_unused_result)) dberr_t
 
     if (err == DB_IO_DECRYPT_FAIL) {
       return err;
-
     } else if (err != DB_SUCCESS && !exit_on_err) {
       return err;
-
     } else if ((ulint)n_bytes == n) {
       /** The read will succeed but decompress can fail
       for various reasons. */
-
-      if (type.is_compression_enabled() &&
-          !Compression::is_compressed_page(static_cast<byte *>(buf))) {
+      if (type.is_compression_enabled() && !Compression::is_compressed_page(static_cast<byte *>(buf))) {
         return (DB_SUCCESS);
-
       } else {
         return (err);
       }
@@ -5336,8 +5340,7 @@ static MY_ATTRIBUTE((warn_unused_result)) dberr_t
     }
   }
 
-  ib::fatal(ER_IB_MSG_818) << "Cannot read from file. OS error number " << errno
-                           << ".";
+  ib::fatal(ER_IB_MSG_818) << "Cannot read from file. OS error number " << errno << ".";
 
   return (err);
 }
@@ -5886,17 +5889,19 @@ not directly this function!
 Requests a synchronous positioned read operation. This function does not do
 any error handling. In case of error it returns FALSE.
 @param[in]	type		IO request context
-@param[in]  file_name file name
+@param[in]  file_name   file name
 @param[in]	file		Open file handle
-@param[out]	buf		buffer where to read
+@param[out]	buf		    buffer where to read
 @param[in]	offset		file offset where to read
-@param[in]	n		number of bytes to read
-@param[out]	o		number of bytes actually read
+@param[in]	n		    number of bytes to read
+@param[out]	o		    number of bytes actually read
 @return DB_SUCCESS or error code */
 dberr_t os_file_read_no_error_handling_func(IORequest &type,
                                             const char *file_name,
-                                            os_file_t file, void *buf,
-                                            os_offset_t offset, ulint n,
+                                            os_file_t file,
+                                            void *buf,
+                                            os_offset_t offset,
+                                            ulint n,
                                             ulint *o) {
   ut_ad(type.is_read());
 

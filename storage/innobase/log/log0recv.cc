@@ -386,13 +386,17 @@ void MetadataRecover::apply() {
 }
 
 /** Creates the recovery system. */
+//
+// 创建恢复系统
 void recv_sys_create() {
   if (recv_sys != nullptr) {
     return;
   }
 
+  // 创建 recv_sys 对象
   recv_sys = static_cast<recv_sys_t *>(ut_zalloc_nokey(sizeof(*recv_sys)));
 
+  // 创建锁
   mutex_create(LATCH_ID_RECV_SYS, &recv_sys->mutex);
   mutex_create(LATCH_ID_RECV_WRITER, &recv_sys->writer_mutex);
 
@@ -426,8 +430,7 @@ static bool recv_sys_resize_buf() {
                           : recv_sys->buf_len * 2;
 
   /* Resize the buffer to the new size. */
-  recv_sys->buf =
-      static_cast<byte *>(ut_realloc(recv_sys->buf, recv_sys->buf_len));
+  recv_sys->buf = static_cast<byte *>(ut_realloc(recv_sys->buf, recv_sys->buf_len));
 
   ut_ad(recv_sys->buf != nullptr);
 
@@ -584,7 +587,11 @@ static bool recv_report_corrupt_log(const byte *ptr, int type, space_id_t space,
   return (true);
 }
 
+// 初始化恢复系统
+//
+// 主要初始化成员变量
 void recv_sys_init(ulint max_mem) {
+
   if (recv_sys->spaces != nullptr) {
     return;
   }
@@ -592,27 +599,28 @@ void recv_sys_init(ulint max_mem) {
   mutex_enter(&recv_sys->mutex);
 
 #ifndef UNIV_HOTBACKUP
+
+  // 如果开启只读，则初始化 flush_start 和 flush_end 两个对象，避免恢复阶段的刷盘行为。
   if (!srv_read_only_mode) {
     recv_sys->flush_start = os_event_create();
     recv_sys->flush_end = os_event_create();
   }
+
 #else  /* !UNIV_HOTBACKUP */
   recv_is_from_backup = true;
   recv_sys->apply_file_operations = false;
 #endif /* !UNIV_HOTBACKUP */
 
-  /* Set appropriate value of recv_n_pool_free_frames. If capacity
-  is at least 10M and 25% above 512 pages then bump free frames to
-  512. */
-  if (buf_pool_get_curr_size() >= (10 * 1024 * 1024) &&
-      (buf_pool_get_curr_size() >= ((512 + 128) * UNIV_PAGE_SIZE))) {
+  /* Set appropriate value of recv_n_pool_free_frames. If capacity is
+  at least 10M and 25% above 512 pages then bump free frames to 512. */
+  if (buf_pool_get_curr_size() >= (10 * 1024 * 1024) && (buf_pool_get_curr_size() >= ((512 + 128) * UNIV_PAGE_SIZE))) {
     /* Buffer pool of size greater than 10 MB. */
     recv_n_pool_free_frames = 512;
   }
 
+
   recv_sys->buf = static_cast<byte *>(ut_malloc_nokey(RECV_PARSING_BUF_SIZE));
   recv_sys->buf_len = RECV_PARSING_BUF_SIZE;
-
   recv_sys->len = 0;
   recv_sys->recovered_offset = 0;
 
@@ -626,11 +634,9 @@ void recv_sys_init(ulint max_mem) {
   recv_sys->apply_batch_on = false;
   recv_sys->is_cloned_db = false;
 
-  recv_sys->last_block_buf_start =
-      static_cast<byte *>(ut_malloc_nokey(2 * OS_FILE_LOG_BLOCK_SIZE));
+  recv_sys->last_block_buf_start = static_cast<byte *>(ut_malloc_nokey(2 * OS_FILE_LOG_BLOCK_SIZE));
 
-  recv_sys->last_block = static_cast<byte *>(
-      ut_align(recv_sys->last_block_buf_start, OS_FILE_LOG_BLOCK_SIZE));
+  recv_sys->last_block = static_cast<byte *>(ut_align(recv_sys->last_block_buf_start, OS_FILE_LOG_BLOCK_SIZE));
 
   recv_sys->found_corrupt_log = false;
   recv_sys->found_corrupt_fs = false;
@@ -780,8 +786,7 @@ void MetadataRecover::store() {
   mutex_exit(&dict_persist->mutex);
 }
 
-/** recv_writer thread tasked with flushing dirty pages from the buffer
-pools. */
+/** recv_writer thread tasked with flushing dirty pages from the buffer pools. */
 static void recv_writer_thread() {
   ut_ad(!srv_read_only_mode);
 
@@ -1152,7 +1157,16 @@ static ulint recv_read_in_area(const page_id_t &page_id) {
 
 /** Apply the log records to a page
 @param[in,out]	recv_addr	Redo log records to apply */
+//
+// 首先把需要应用日志的页读取到 buffer pool 中 buf_page_get ，
+// 然后调用 recv_recover_page 将日志的修改应用到该页中去。
+//
+//
+// 如果页面不在 buffer 中，会主动尝试采用预读的方式多读点 page (recv_read_in_area)，
+// 搜集最多连续 32 个（RECV_READ_AHEAD_AREA）需要做恢复的 page no ，然后发送异步读请求。
+// page 读入 buffer pool 时，会主动做崩溃恢复逻辑；
 static void recv_apply_log_rec(recv_addr_t *recv_addr) {
+
   if (recv_addr->state == RECV_DISCARDED) {
     ut_a(recv_sys->n_addrs > 0);
     --recv_sys->n_addrs;
@@ -1162,11 +1176,9 @@ static void recv_apply_log_rec(recv_addr_t *recv_addr) {
   bool found;
   const page_id_t page_id(recv_addr->space, recv_addr->page_no);
 
-  const page_size_t page_size =
-      fil_space_get_page_size(recv_addr->space, &found);
+  const page_size_t page_size = fil_space_get_page_size(recv_addr->space, &found);
 
-  if (!found || recv_sys->missing_ids.find(recv_addr->space) !=
-                    recv_sys->missing_ids.end()) {
+  if (!found || recv_sys->missing_ids.find(recv_addr->space) != recv_sys->missing_ids.end()) {
     /* Tablespace was discarded or dropped after changes were
     made to it. Or, we have ignored redo log for this tablespace
     earlier and somehow it has been found now. We can't apply
@@ -1194,10 +1206,12 @@ static void recv_apply_log_rec(recv_addr_t *recv_addr) {
 
       buf_block_t *block;
 
+      // 读取 page
       block = buf_page_get(page_id, page_size, RW_X_LATCH, &mtr);
 
       buf_block_dbg_add_level(block, SYNC_NO_ORDER_CHECK);
 
+      // 应用修改
       recv_recover_page(false, block);
 
       mtr_commit(&mtr);
@@ -1221,6 +1235,17 @@ pages.
                                 no new log records can be generated during
                                 the application; the caller must in this case
                                 own the log mutex */
+
+// 遍历 hash_table ，针对 hash 表中的每一个有日志的数据页，调用 recv_apply_log_rec 应用与其有关的 redo 日志。
+// 应用完所有的日志后，如果需要则把 buffer_pool 的页面都刷盘(buf_pool_invalidate)。
+//
+// 根据之前保存到 recv_sys->addr_hash 中的日志记录，依次将 page 读入内存，并对每个 page 进行崩溃恢复操作（recv_recover_page_func）：
+//    - 已经被删除的表空间，直接跳过其对应的日志记录；
+//    - 在读入需要恢复的文件页时，会主动尝试采用预读的方式多读点page (recv_read_in_area)，搜集最多连续32个（RECV_READ_AHEAD_AREA）需要做恢复的page no，然后发送异步读请求。 page 读入buffer pool时，会主动做崩溃恢复逻辑；
+//    - 只有LSN大于数据页上LSN的日志才会被apply; 忽略被truncate的表的redo日志；
+//    - 在恢复数据页的过程中不产生新的redo 日志；
+//    - 在完成修复page后，需要将脏页加入到buffer pool的flush list上；由于innodb需要保证flush list的有序性，而崩溃恢复过程中修改page的LSN是基于redo 的LSN而不是全局的LSN，无法保证有序性；InnoDB另外维护了一颗红黑树来维持有序性，每次插入到flush list前，查找红黑树找到合适的插入位置，然后加入到flush list上。（buf_flush_recv_note_modification）
+////
 void recv_apply_hashed_log_recs(log_t &log, bool allow_ibuf) {
   for (;;) {
     mutex_enter(&recv_sys->mutex);
@@ -1230,7 +1255,6 @@ void recv_apply_hashed_log_recs(log_t &log, bool allow_ibuf) {
     }
 
     mutex_exit(&recv_sys->mutex);
-
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
   }
 
@@ -1258,11 +1282,12 @@ void recv_apply_hashed_log_recs(log_t &log, bool allow_ibuf) {
 
   auto start_time = ut_time_monotonic();
 
+
+  // 遍历 space
   for (const auto &space : *recv_sys->spaces) {
     bool dropped;
 
-    if (space.first != TRX_SYS_SPACE &&
-        !fil_tablespace_open_for_recovery(space.first)) {
+    if (space.first != TRX_SYS_SPACE && !fil_tablespace_open_for_recovery(space.first)) {
       /* Tablespace was dropped. It should not have been scanned unless it
       is an undo space that was under construction. */
 
@@ -1275,6 +1300,7 @@ void recv_apply_hashed_log_recs(log_t &log, bool allow_ibuf) {
       dropped = false;
     }
 
+    // 遍历 pages
     for (auto pages : space.second.m_pages) {
       ut_ad(pages.second->space == space.first);
 
@@ -1282,23 +1308,20 @@ void recv_apply_hashed_log_recs(log_t &log, bool allow_ibuf) {
         pages.second->state = RECV_DISCARDED;
       }
 
+      // 应用 redo 日志
       recv_apply_log_rec(pages.second);
 
+      // 应用计数
       ++applied;
 
+      // 打印日志
       if (unit == 0 || (applied % unit) == 0) {
         ib::info(ER_IB_MSG_708) << pct << "%";
-
         pct += PCT;
-
         start_time = ut_time_monotonic();
-
       } else if (ut_time_monotonic() - start_time >= PRINT_INTERVAL_SECS) {
         start_time = ut_time_monotonic();
-
-        ib::info(ER_IB_MSG_709)
-            << std::setprecision(2)
-            << ((double)applied * 100) / (double)batch_size << "%";
+        ib::info(ER_IB_MSG_709) << std::setprecision(2) << ((double)applied * 100) / (double)batch_size << "%";
       }
     }
   }
@@ -1629,10 +1652,21 @@ specified.
 @param[in]	parsed_bytes	Number of bytes parsed so far
 @param[in]	start_lsn	lsn for REDO record
 @return log record end, nullptr if not a complete record */
-static byte *recv_parse_or_apply_log_rec_body(
-    mlog_id_t type, byte *ptr, byte *end_ptr, space_id_t space_id,
-    page_no_t page_no, buf_block_t *block, mtr_t *mtr, ulint parsed_bytes,
-    lsn_t start_lsn) {
+//
+//
+//
+// 回放的逻辑也比较简单，扫描之前构建的 hash table 内的每一个 redo log ，
+// 读取该 redo log 对应的 page ，然后根据 redo log 类型将其日志在物理页面上执行一遍。
+static byte *recv_parse_or_apply_log_rec_body(mlog_id_t type,
+                                              byte *ptr,
+                                              byte *end_ptr,
+                                              space_id_t space_id,
+                                              page_no_t page_no,
+                                              buf_block_t *block,
+                                              mtr_t *mtr,
+                                              ulint parsed_bytes,
+                                              lsn_t start_lsn
+                                              ) {
   bool applying_redo = (block != nullptr);
 
   switch (type) {
@@ -1852,6 +1886,7 @@ static byte *recv_parse_or_apply_log_rec_body(
 
     case MLOG_2BYTES:
     case MLOG_8BYTES:
+
 #ifdef UNIV_DEBUG
       if (page && page_type == FIL_PAGE_TYPE_ALLOCATED && end_ptr >= ptr + 2) {
         /* It is OK to set FIL_PAGE_TYPE and certain
@@ -1912,10 +1947,12 @@ static byte *recv_parse_or_apply_log_rec_body(
       }
 #endif /* UNIV_DEBUG */
 
+
+      //
       ptr = mlog_parse_nbytes(type, ptr, end_ptr, page, page_zip);
 
-      if (ptr != nullptr && page != nullptr && page_no == 0 &&
-          type == MLOG_4BYTES) {
+      if (ptr != nullptr && page != nullptr && page_no == 0 && type == MLOG_4BYTES) {
+
         ulint offs = mach_read_from_2(old_ptr);
 
         switch (offs) {
@@ -1948,15 +1985,13 @@ static byte *recv_parse_or_apply_log_rec_body(
                   break;
                 }
 
-                ib::info(ER_IB_MSG_718, ulong{space->id}, space->name,
-                         ulong{val});
+                ib::info(ER_IB_MSG_718, ulong{space->id}, space->name, ulong{val});
 
                 if (fil_space_extend(space, val)) {
                   break;
                 }
 
-                ib::error(ER_IB_MSG_719, ulong{space->id}, space->name,
-                          ulong{val});
+                ib::error(ER_IB_MSG_719, ulong{space->id}, space->name, ulong{val});
                 break;
 
               case FSP_HEADER_OFFSET + FSP_FREE_LIMIT:
@@ -2322,9 +2357,17 @@ static byte *recv_parse_or_apply_log_rec_body(
 @param[in]	rec_end		log record end
 @param[in]	start_lsn	start lsn of the mtr
 @param[in]	end_lsn		end lsn of the mtr */
-static void recv_add_to_hash_table(mlog_id_t type, space_id_t space_id,
-                                   page_no_t page_no, byte *body, byte *rec_end,
-                                   lsn_t start_lsn, lsn_t end_lsn) {
+
+// recv_add_to_hash_table 原理也比较简单，recv_sys 对象内存在一个 hash table ，
+// 根据 redo log 的 <space_id, page_no> 计算 hash 值并插入至 hash table 中即可。
+static void recv_add_to_hash_table(mlog_id_t type,
+                                   space_id_t space_id,
+                                   page_no_t page_no,
+                                   byte *body,
+                                   byte *rec_end,
+                                   lsn_t start_lsn,
+                                   lsn_t end_lsn) {
+
   ut_ad(type != MLOG_FILE_DELETE);
   ut_ad(type != MLOG_FILE_CREATE);
   ut_ad(type != MLOG_FILE_RENAME);
@@ -2339,7 +2382,6 @@ static void recv_add_to_hash_table(mlog_id_t type, space_id_t space_id,
   recv_t *recv;
 
   recv = static_cast<recv_t *>(mem_heap_alloc(space->m_heap, sizeof(*recv)));
-
   recv->type = type;
   recv->end_lsn = end_lsn;
   recv->len = rec_end - body;
@@ -2353,9 +2395,7 @@ static void recv_add_to_hash_table(mlog_id_t type, space_id_t space_id,
     recv_addr = it->second;
 
   } else {
-    recv_addr = static_cast<recv_addr_t *>(
-        mem_heap_alloc(space->m_heap, sizeof(*recv_addr)));
-
+    recv_addr = static_cast<recv_addr_t *>(mem_heap_alloc(space->m_heap, sizeof(*recv_addr)));
     recv_addr->space = space_id;
     recv_addr->page_no = page_no;
     recv_addr->state = RECV_NOT_PROCESSED;
@@ -2388,8 +2428,7 @@ static void recv_add_to_hash_table(mlog_id_t type, space_id_t space_id,
 
     recv_data_t *recv_data;
 
-    recv_data = static_cast<recv_data_t *>(
-        mem_heap_alloc(space->m_heap, sizeof(*recv_data) + len));
+    recv_data = static_cast<recv_data_t *>(mem_heap_alloc(space->m_heap, sizeof(*recv_data) + len));
 
     *prev_field = recv_data;
 
@@ -2461,6 +2500,17 @@ read in, or also for a page already in the buffer pool.
 @param[in]	just_read_in	true if the IO handler calls this for a freshly
                                 read page
 @param[in,out]	block		buffer block */
+//
+// 流程:
+// - 已经被删除的表空间，直接跳过其对应的日志记录；
+// - 只有 LSN 大于数据页上 LSN 的日志才会被 apply ;
+// - 忽略被 truncate 的表的 redo 日志；
+// - 在恢复数据页的过程中不产生新的 redo 日志；
+// - 在完成修复 page 后，需要将脏页加入到 buffer pool 的 flush list上 ；
+//      - 由于 innodb 需要保证 flush list 的有序性，而崩溃恢复过程中修改 page 的 LSN 是基于 redo 的 LSN 而不是全局的 LSN ，无法保证有序性；
+//      - InnoDB 另外维护了一颗红黑树来维持有序性，每次插入到 flush list 前，查找红黑树找到合适的插入位置，然后加入到 flush list 上。
+//      - 详见 buf_flush_recv_note_modification 函数。
+//
 void recv_recover_page_func(
 #ifndef UNIV_HOTBACKUP
     bool just_read_in,
@@ -2480,15 +2530,12 @@ void recv_recover_page_func(
 
   recv_addr = recv_get_rec(block->page.id.space(), block->page.id.page_no());
 
-  if (recv_addr == nullptr || recv_addr->state == RECV_BEING_PROCESSED ||
-      recv_addr->state == RECV_PROCESSED) {
+  if (recv_addr == nullptr || recv_addr->state == RECV_BEING_PROCESSED || recv_addr->state == RECV_PROCESSED) {
 #ifndef UNIV_HOTBACKUP
-    ut_ad(recv_addr == nullptr || recv_needed_recovery ||
-          recv_sys->scanned_lsn < recv_sys->checkpoint_lsn);
+    ut_ad(recv_addr == nullptr || recv_needed_recovery ||  recv_sys->scanned_lsn < recv_sys->checkpoint_lsn);
 #endif /* !UNIV_HOTBACKUP */
 
     mutex_exit(&recv_sys->mutex);
-
     return;
   }
 
@@ -2498,8 +2545,7 @@ void recv_recover_page_func(
   {
     buf_page_t &bpage = block->page;
 
-    if (!fsp_is_system_temporary(bpage.id.space()) &&
-        (arch_page_sys != nullptr && arch_page_sys->is_active())) {
+    if (!fsp_is_system_temporary(bpage.id.space()) && (arch_page_sys != nullptr && arch_page_sys->is_active())) {
       page_t *frame;
       lsn_t frame_lsn;
 
@@ -2517,11 +2563,9 @@ void recv_recover_page_func(
 
 #ifndef UNIV_HOTBACKUP
   /* this is explicitly false in case of meb, skip the assert */
-  ut_ad(recv_needed_recovery ||
-        recv_sys->scanned_lsn < recv_sys->checkpoint_lsn);
+  ut_ad(recv_needed_recovery || recv_sys->scanned_lsn < recv_sys->checkpoint_lsn);
 
-  DBUG_PRINT("ib_log", ("Applying log to page %u:%u", recv_addr->space,
-                        recv_addr->page_no));
+  DBUG_PRINT("ib_log", ("Applying log to page %u:%u", recv_addr->space, recv_addr->page_no));
 
 #ifdef UNIV_DEBUG
   lsn_t max_lsn;
@@ -2557,8 +2601,7 @@ void recv_recover_page_func(
     rw_lock_x_lock_move_ownership(&block->lock);
   }
 
-  bool success = buf_page_get_known_nowait(
-      RW_X_LATCH, block, Cache_hint::KEEP_OLD, __FILE__, __LINE__, &mtr);
+  bool success = buf_page_get_known_nowait(RW_X_LATCH, block, Cache_hint::KEEP_OLD, __FILE__, __LINE__, &mtr);
   ut_a(success);
 
   buf_block_dbg_add_level(block, SYNC_NO_ORDER_CHECK);
@@ -2593,8 +2636,7 @@ void recv_recover_page_func(
   lsn_t start_lsn = 0;
   bool modification_to_page = false;
 
-  for (auto recv = UT_LIST_GET_FIRST(recv_addr->rec_list); recv != nullptr;
-       recv = UT_LIST_GET_NEXT(rec_list, recv)) {
+  for (auto recv = UT_LIST_GET_FIRST(recv_addr->rec_list); recv != nullptr; recv = UT_LIST_GET_NEXT(rec_list, recv)) {
 #ifndef UNIV_HOTBACKUP
     end_lsn = recv->end_lsn;
 
@@ -2742,9 +2784,18 @@ void recv_recover_page_func(
 @param[out]	page_no		page number
 @param[out]	body		start of log record body
 @return length of the record, or 0 if the record was not complete */
-static ulint recv_parse_log_rec(mlog_id_t *type, byte *ptr, byte *end_ptr,
-                                space_id_t *space_id, page_no_t *page_no,
-                                byte **body) {
+//
+//
+// 解析 recv_sus->buf 中的日志，按照 space_id, page_no 来 hash 到不同的表中。
+//
+//
+static ulint recv_parse_log_rec(mlog_id_t *type, // 类型
+                                byte *ptr,
+                                byte *end_ptr,
+                                space_id_t *space_id, //表空间id
+                                page_no_t *page_no, //页面号
+                                byte **body //日志内容
+                                ) {
   byte *new_ptr;
 
   *body = nullptr;
@@ -2763,8 +2814,7 @@ static ulint recv_parse_log_rec(mlog_id_t *type, byte *ptr, byte *end_ptr,
     case MLOG_LSN | MLOG_SINGLE_REC_FLAG:
     case MLOG_LSN:
 
-      new_ptr =
-          mlog_parse_initial_log_record(ptr, end_ptr, type, space_id, page_no);
+      new_ptr = mlog_parse_initial_log_record(ptr, end_ptr, type, space_id, page_no);
 
       if (new_ptr != nullptr) {
         const lsn_t lsn = static_cast<lsn_t>(*space_id) << 32 | *page_no;
@@ -2797,19 +2847,16 @@ static ulint recv_parse_log_rec(mlog_id_t *type, byte *ptr, byte *end_ptr,
       *page_no = FIL_NULL;
       *space_id = SPACE_UNKNOWN;
 
-      new_ptr =
-          mlog_parse_initial_dict_log_record(ptr, end_ptr, type, &id, &version);
+      new_ptr = mlog_parse_initial_dict_log_record(ptr, end_ptr, type, &id, &version);
 
       if (new_ptr != nullptr) {
-        new_ptr = recv_sys->metadata_recover->parseMetadataLog(
-            id, version, new_ptr, end_ptr);
+        new_ptr = recv_sys->metadata_recover->parseMetadataLog(id, version, new_ptr, end_ptr);
       }
 
       return (new_ptr == nullptr ? 0 : new_ptr - ptr);
   }
 
-  new_ptr =
-      mlog_parse_initial_log_record(ptr, end_ptr, type, space_id, page_no);
+  new_ptr = mlog_parse_initial_log_record(ptr, end_ptr, type, space_id, page_no);
 
   *body = new_ptr;
 
@@ -2817,6 +2864,7 @@ static ulint recv_parse_log_rec(mlog_id_t *type, byte *ptr, byte *end_ptr,
     return (0);
   }
 
+  //
   new_ptr = recv_parse_or_apply_log_rec_body(
       *type, new_ptr, end_ptr, *space_id, *page_no, nullptr, nullptr,
       new_ptr - ptr, recv_sys->recovered_lsn);
@@ -2887,6 +2935,9 @@ static void recv_track_changes_of_recovered_lsn() {
 @param[in]	ptr		start of buffer
 @param[in]	end_ptr		end of buffer
 @return true if end of processing */
+//
+//
+//
 static bool recv_single_rec(byte *ptr, byte *end_ptr) {
   /* The mtr did not modify multiple pages */
 
@@ -2900,8 +2951,7 @@ static bool recv_single_rec(byte *ptr, byte *end_ptr) {
   page_no_t page_no;
   space_id_t space_id;
 
-  ulint len =
-      recv_parse_log_rec(&type, ptr, end_ptr, &space_id, &page_no, &body);
+  ulint len = recv_parse_log_rec(&type, ptr, end_ptr, &space_id, &page_no, &body);
 
   if (recv_sys->found_corrupt_log) {
     recv_report_corrupt_log(ptr, type, space_id, page_no);
@@ -2956,12 +3006,11 @@ static bool recv_single_rec(byte *ptr, byte *end_ptr) {
 
       if (recv_recovery_on) {
 #ifndef UNIV_HOTBACKUP
-        if (space_id == TRX_SYS_SPACE ||
-            fil_tablespace_lookup_for_recovery(space_id)) {
+        if (space_id == TRX_SYS_SPACE || fil_tablespace_lookup_for_recovery(space_id)) {
 #endif /* !UNIV_HOTBACKUP */
 
-          recv_add_to_hash_table(type, space_id, page_no, body, ptr + len,
-                                 old_lsn, recv_sys->recovered_lsn);
+          // 添加到 hash 表中
+          recv_add_to_hash_table(type, space_id, page_no, body, ptr + len, old_lsn, recv_sys->recovered_lsn);
 
 #ifndef UNIV_HOTBACKUP
         } else {
@@ -3010,34 +3059,25 @@ static bool recv_multi_rec(byte *ptr, byte *end_ptr) {
     page_no_t page_no = 0;
     space_id_t space_id = 0;
 
-    ulint len =
-        recv_parse_log_rec(&type, ptr, end_ptr, &space_id, &page_no, &body);
+    // 根据规则解析出日志的 type,space_id,page_no, 以及 body 。
+    ulint len = recv_parse_log_rec(&type, ptr, end_ptr, &space_id, &page_no, &body);
 
     if (recv_sys->found_corrupt_log) {
       recv_report_corrupt_log(ptr, type, space_id, page_no);
-
       return (true);
-
     } else if (len == 0) {
       return (true);
-
     } else if ((*ptr & MLOG_SINGLE_REC_FLAG)) {
       recv_sys->found_corrupt_log = true;
-
       recv_report_corrupt_log(ptr, type, space_id, page_no);
-
       return (true);
-
     } else if (recv_sys->found_corrupt_fs) {
       return (true);
     }
 
     recv_sys->save_rec(n_recs, space_id, page_no, type, body, len);
-
     recv_previous_parsed_rec_type = type;
-
     recv_previous_parsed_rec_offset = recv_sys->recovered_offset + total_len;
-
     recv_previous_parsed_rec_is_multi = 1;
 
     total_len += len;
@@ -3046,26 +3086,18 @@ static bool recv_multi_rec(byte *ptr, byte *end_ptr) {
     ptr += len;
 
     if (type == MLOG_MULTI_REC_END) {
-      DBUG_PRINT("ib_log", ("scan " LSN_PF ": multi-log end total_len " ULINTPF
-                            " n=" ULINTPF,
-                            recv_sys->recovered_lsn, total_len, n_recs));
-
+      DBUG_PRINT("ib_log", ("scan " LSN_PF ": multi-log end total_len " ULINTPF " n=" ULINTPF, recv_sys->recovered_lsn, total_len, n_recs));
       break;
     }
 
-    DBUG_PRINT("ib_log",
-               ("scan " LSN_PF ": multi-log rec %s len " ULINTPF " " PAGE_ID_PF,
-                recv_sys->recovered_lsn, get_mlog_string(type), len, space_id,
-                page_no));
+    DBUG_PRINT("ib_log", ("scan " LSN_PF ": multi-log rec %s len " ULINTPF " " PAGE_ID_PF,  recv_sys->recovered_lsn, get_mlog_string(type), len, space_id, page_no));
   }
 
-  lsn_t new_recovered_lsn =
-      recv_calc_lsn_on_data_add(recv_sys->recovered_lsn, total_len);
+  lsn_t new_recovered_lsn = recv_calc_lsn_on_data_add(recv_sys->recovered_lsn, total_len);
 
   if (new_recovered_lsn > recv_sys->scanned_lsn) {
     /* The log record filled a log block, and we require
     that also the next log block should have been scanned in */
-
     return (true);
   }
 
@@ -3090,8 +3122,7 @@ static bool recv_multi_rec(byte *ptr, byte *end_ptr) {
       len = recv_parse_log_rec(&type, ptr, end_ptr, &space_id, &page_no, &body);
     }
 
-    if (recv_sys->found_corrupt_log &&
-        !recv_report_corrupt_log(ptr, type, space_id, page_no)) {
+    if (recv_sys->found_corrupt_log && !recv_report_corrupt_log(ptr, type, space_id, page_no)) {
       return (true);
 
     } else if (recv_sys->found_corrupt_fs) {
@@ -3143,8 +3174,8 @@ static bool recv_multi_rec(byte *ptr, byte *end_ptr) {
               fil_tablespace_lookup_for_recovery(space_id)) {
 #endif /* !UNIV_HOTBACKUP */
 
-            recv_add_to_hash_table(type, space_id, page_no, body, ptr + len,
-                                   old_lsn, new_recovered_lsn);
+            // 插入到 hash 表中
+            recv_add_to_hash_table(type, space_id, page_no, body, ptr + len, old_lsn, new_recovered_lsn);
 
 #ifndef UNIV_HOTBACKUP
           } else {
@@ -3163,18 +3194,41 @@ static bool recv_multi_rec(byte *ptr, byte *end_ptr) {
 /** Parse log records from a buffer and optionally store them to a
 hash table to wait merging to file pages.
 @param[in]	checkpoint_lsn	the LSN of the latest checkpoint */
+//
+// 在 recv_parse_log_recs 时，解析到的日志分两种：single_rec 和 multi_rec ，
+// 前者表示只对一个数据页进行一种操作，后者表示对一个或者多个数据页进行多种操作。
+//
+// 日志中还包括对应数据页的 space_id，page_no，操作的 type 以及操作的内容(具体单条日志记录的解析逻辑在recv_parse_log_rec函数中)。
+//
+// 解析出相应的日志后，按照 space_id 和 page_no 进行哈希并放到 hash_table 里面即可，等待后续应用。
+//
+// 在 recv_single_rec 和 recv_multi_rec 中都会调用到 recv_parse_log_rec 进行单条记录的解析，
+// 然后调用 recv_add_to_hash_table 放到 hash 表中去。
+//
+// 无论是 single 还是 multi redo log record，解析出 log 的 type 和 body 等信息后都会
+// 通过 recv_add_to_hash_table 将其插入至全局的 hash table 中。
+//
+//
 static void recv_parse_log_recs(lsn_t checkpoint_lsn) {
   ut_ad(recv_sys->parse_start_lsn != 0);
 
+
+  // 遍历日志
   for (;;) {
+
+    // 当前 record
     byte *ptr = recv_sys->buf + recv_sys->recovered_offset;
 
+    // 结尾 record
     byte *end_ptr = recv_sys->buf + recv_sys->len;
 
+    // 到达结尾
     if (ptr == end_ptr) {
       return;
     }
 
+
+    // 是否为单条记录
     bool single_rec;
 
     switch (*ptr) {
@@ -3185,14 +3239,16 @@ static void recv_parse_log_recs(lsn_t checkpoint_lsn) {
         single_rec = true;
         break;
       default:
+        // 通过 MLOG_SINGLE_REC_FLAG 标记位来判断，详见 MTR 相关
         single_rec = !!(*ptr & MLOG_SINGLE_REC_FLAG);
     }
 
+    // 解析单条日志
     if (single_rec) {
       if (recv_single_rec(ptr, end_ptr)) {
         return;
       }
-
+    // 解析多条日志(mtr)
     } else if (recv_multi_rec(ptr, end_ptr)) {
       return;
     }
@@ -3205,14 +3261,14 @@ recv_sys->parse_start_lsn is non-zero.
 @param[in]	scanned_lsn		lsn of how far we were able
                                         to find data in this log block
 @return true if more data added */
-static bool recv_sys_add_to_parsing_buf(const byte *log_block,
-                                        lsn_t scanned_lsn) {
+//
+//
+// 将 log_sys->buf 中的日志 block 去掉头尾，放到 recv_sys->buf 中。
+static bool recv_sys_add_to_parsing_buf(const byte *log_block, lsn_t scanned_lsn) {
   ut_ad(scanned_lsn >= recv_sys->scanned_lsn);
 
   if (!recv_sys->parse_start_lsn) {
-    /* Cannot start parsing yet because no start point for
-    it found */
-
+    /* Cannot start parsing yet because no start point for it found */
     return (false);
   }
 
@@ -3253,9 +3309,11 @@ static bool recv_sys_add_to_parsing_buf(const byte *log_block,
   ut_ad(start_offset <= end_offset);
 
   if (start_offset < end_offset) {
-    memcpy(recv_sys->buf + recv_sys->len, log_block + start_offset,
-           end_offset - start_offset);
 
+    // 将 block[start, end] 拷贝（追加）到 recv_sys->buf[:] 中。
+    memcpy(recv_sys->buf + recv_sys->len, log_block + start_offset, end_offset - start_offset);
+
+    // 更新长度
     recv_sys->len += end_offset - start_offset;
 
     ut_a(recv_sys->len <= recv_sys->buf_len);
@@ -3289,6 +3347,71 @@ automatically when the hash table becomes full.
                                 contiguous log data up to this lsn
 @param[out]	read_upto_lsn	scanning succeeded up to this lsn
 @return true if not able to scan any more in this log */
+
+
+// 在 recv_scan_log_recs 中，首先通过 block_no 和 lsn 之间的关系以及日志 checksum 判断是否读到了日志最后，
+// 如果读到最后则返回(即使数据库是正常关闭的，也要走崩溃恢复逻辑，那么在这里就返回了，因为正常关闭的 checkpoint 值一定是指向日志最后)，
+// 否则调用 recv_sys_add_to_parsing_buf 函数把日志去头去尾放到一个 recv_sys->buf 中，日志头里面存了一些控制信息和 checksum 值，
+// 只是用来校验和定位，在真正的应用时没有用。
+//
+// 接下来就开始调用 recv_parse_log_recs 对 recv_sys->buf 中的日志数据进行解析然后放到前面提到的 hash 表中。
+// 当 hash 表中存放的数据 recv_addr_t 达到一定的大小之后，就调用 recv_apply_hashed_log_recs 进行日志应用。
+//
+//
+// 流程图
+//   |--> recv_recovery_from_checkpoint_start
+//   |    |--> buf_flush_init_flush_rbt  //创建一颗红黑树，加速flush list插入速度
+//   |    |--> recv_find_max_checkpoint  //从ib_logfile0中找到最大的checkpoint
+//   |    |/*if  not read-only*/
+//   |    |--> recv_init_crash_recovery  //进行崩溃恢复的环境初始化工作
+//   |    |    |--> buf_dblwr_process    //恢复半页写
+//   |    |    |    |/*loop*/
+//   |    |    |    |--> buf_dblwr_recover_page
+//   |    |    |    |    |--> if(block.is_corrupted())
+//   |    |    |    |    |    |-->if (dblwr_buf_page.is_corrupted())
+//   |    |    |    |    |    |--> //print error and skip
+//   |    |    |    |    |    |-->fi
+//   |    |    |    |    |    |fil_io //Write the good page from the doublewrite buffer to the intended position
+//   |    |    |    |    |--> fi
+//   |    |    |    |/*out of loop*/
+//   |    |    |    |--> fil_flush_file_spaces
+//   |    |    |
+//   |    |    |--> srv_threads.m_recv_writer.start()  //启动recv_writer_thread
+//   |    |--> recv_recovery_begin  //崩溃恢复主函数
+//   |    |    |/*loop*/
+//   |    |    |--> recv_read_log_seg  //按照RECV_SCAN_SIZE(64KB)大小分批读取日志数据到log_sys->buf中
+//   |    |    |--> recv_scan_log_recs
+//   |    |    |    |/*loop*/
+//   |    |    |    |--> recv_sys_add_to_parsing_buf  //把日志去头去尾放到一个recv_sys->buf中
+//   |    |    |    |/*out of loop*/
+//   |    |    |    |
+//   |    |    |    |--> recv_parse_log_recs
+//   |    |    |    |    |--> recv_single_rec|recv_multi_rec
+//   |    |    |    |    |    |--> recv_parse_log_rec
+//   |    |    |    |    |    |    |--> recv_parse_or_apply_log_rec_body //在这里仅仅解析记录
+//   |    |    |    |
+//   |    |    |    |/*if (recv_heap_used() > max_memory)*/
+//   |    |    |    |/*当hash表中存放的数据recv_addr_t达到一定的大小之后，则进行日志应用*/
+//   |    |    |    |--> recv_apply_hashed_log_recs
+//   |    |    |    |    |/*loop*/
+//   |    |    |    |    |/*恢复前，需要打开对应的物理文件*/
+//   |    |    |    |    |--> fil_tablespace_open_for_recovery
+//   |    |    |    |    |/*进入恢复逻辑*/
+//   |    |    |    |    |--> recv_apply_log_rec
+//   |    |    |    |    |    |--> recv_recover_page
+//   |    |    |    |    |    |    | /*loop*/
+//   |    |    |    |    |    |    |--> recv_parse_or_apply_log_rec_body //根据日志类型，选择对于的恢复函数
+//   |    |    |    |    |    |    | /*out of loop*/
+//   |    |    |    |    |    |    |--> buf_flush_recv_note_modification //找到合适插入位置
+//   |    |    |    |    |/*out of loop*/
+//   |    |    |    |    |--> buf_flush_wait_LRU_batch_end               //等待LRU刷盘结束
+//   |    |    |    |    |--> os_event_reset(recv_sys->flush_end)
+//   |    |    |    |    |--> recv_sys->flush_type = BUF_FLUSH_LIST      //触发flush list刷盘
+//   |    |    |    |    |--> os_event_set(recv_sys->flush_start)
+//   |    |    |    |    |--> os_event_wait(recv_sys->flush_end)
+//   |    |    |    |    |--> buf_pool_invalidate                        //清空buffer pool
+//   |    |    |/*out of loop*/
+//
 #ifndef UNIV_HOTBACKUP
 static bool recv_scan_log_recs(log_t &log,
 #else  /* !UNIV_HOTBACKUP */
@@ -3306,13 +3429,14 @@ bool meb_scan_log_recs(
   ut_ad(len % OS_FILE_LOG_BLOCK_SIZE == 0);
   ut_ad(len >= OS_FILE_LOG_BLOCK_SIZE);
 
+  // 按照 block 扫描 redo log 并将其有效内容加入至 parse buffer(recv_sys->buf)
   do {
     ut_ad(!finished);
 
     ulint no = log_block_get_hdr_no(log_block);
-
     ulint expected_no = log_block_convert_lsn_to_no(scanned_lsn);
 
+    // 通过 block_no 和 scanned_lsn 之间的关系判断是否读到结尾
     if (no != expected_no) {
       /* Garbage or an incompletely written log block.
 
@@ -3320,17 +3444,15 @@ bool meb_scan_log_recs(
       happen when InnoDB was killed while it was
       writing redo log. We simply treat this as an
       abrupt end of the redo log. */
-
       finished = true;
-
       break;
     }
 
+    // 通过日志 checksum 判断是否读到结尾
     if (!log_block_checksum_is_ok(log_block)) {
       uint32_t checksum1 = log_block_get_checksum(log_block);
       uint32_t checksum2 = log_block_calc_checksum(log_block);
-      ib::error(ER_IB_MSG_720, ulonglong{no}, ulonglong{scanned_lsn},
-                ulong{checksum1}, ulong{checksum2});
+      ib::error(ER_IB_MSG_720, ulonglong{no}, ulonglong{scanned_lsn}, ulong{checksum1}, ulong{checksum2});
 
       /* Garbage or an incompletely written log block.
 
@@ -3343,6 +3465,7 @@ bool meb_scan_log_recs(
       break;
     }
 
+    // ???
     if (log_block_get_flush_bit(log_block)) {
       /* This block was a start of a log flush operation:
       we know that the previous flush operation must have
@@ -3355,29 +3478,25 @@ bool meb_scan_log_recs(
       }
     }
 
+
+    // 读取当前 block 中 redo 的长度
     ulint data_len = log_block_get_data_len(log_block);
 
     if (scanned_lsn + data_len > recv_sys->scanned_lsn &&
-        log_block_get_checkpoint_no(log_block) <
-            recv_sys->scanned_checkpoint_no &&
-        (recv_sys->scanned_checkpoint_no -
-             log_block_get_checkpoint_no(log_block) >
-         0x80000000UL)) {
+        log_block_get_checkpoint_no(log_block) < recv_sys->scanned_checkpoint_no &&
+        (recv_sys->scanned_checkpoint_no - log_block_get_checkpoint_no(log_block) > 0x80000000UL)) {
       /* Garbage from a log buffer flush which was made
       before the most recent database recovery */
 
       finished = true;
-
       break;
     }
 
-    if (!recv_sys->parse_start_lsn &&
-        log_block_get_first_rec_group(log_block) > 0) {
+    if (!recv_sys->parse_start_lsn && log_block_get_first_rec_group(log_block) > 0) {
       /* We found a point from which to start the parsing
       of log records */
 
-      recv_sys->parse_start_lsn =
-          scanned_lsn + log_block_get_first_rec_group(log_block);
+      recv_sys->parse_start_lsn = scanned_lsn + log_block_get_first_rec_group(log_block);
 
       ib::info(ER_IB_MSG_1261)
           << "Starting to parse redo log at lsn = " << recv_sys->parse_start_lsn
@@ -3404,18 +3523,11 @@ bool meb_scan_log_recs(
         those records and that's why we need a counter
         of bytes to ignore. */
 
-        recv_sys->bytes_to_ignore_before_checkpoint =
-            recv_sys->checkpoint_lsn - recv_sys->parse_start_lsn;
+        recv_sys->bytes_to_ignore_before_checkpoint = recv_sys->checkpoint_lsn - recv_sys->parse_start_lsn;
 
-        ut_a(recv_sys->bytes_to_ignore_before_checkpoint <=
-             OS_FILE_LOG_BLOCK_SIZE - LOG_BLOCK_HDR_SIZE);
-
-        ut_a(recv_sys->checkpoint_lsn % OS_FILE_LOG_BLOCK_SIZE +
-                 LOG_BLOCK_TRL_SIZE <
-             OS_FILE_LOG_BLOCK_SIZE);
-
-        ut_a(recv_sys->parse_start_lsn % OS_FILE_LOG_BLOCK_SIZE >=
-             LOG_BLOCK_HDR_SIZE);
+        ut_a(recv_sys->bytes_to_ignore_before_checkpoint <= OS_FILE_LOG_BLOCK_SIZE - LOG_BLOCK_HDR_SIZE);
+        ut_a(recv_sys->checkpoint_lsn % OS_FILE_LOG_BLOCK_SIZE +  LOG_BLOCK_TRL_SIZE < OS_FILE_LOG_BLOCK_SIZE);
+        ut_a(recv_sys->parse_start_lsn % OS_FILE_LOG_BLOCK_SIZE >=  LOG_BLOCK_HDR_SIZE);
       }
 
       recv_sys->scanned_lsn = recv_sys->parse_start_lsn;
@@ -3435,10 +3547,10 @@ bool meb_scan_log_recs(
           return (true);
         }
 
-      } else if (!recv_needed_recovery &&
-                 scanned_lsn > recv_sys->checkpoint_lsn) {
+      } else if (!recv_needed_recovery && scanned_lsn > recv_sys->checkpoint_lsn) {
         ib::info(ER_IB_MSG_722, ulonglong{recv_sys->scanned_lsn});
 
+        // 进行崩溃恢复的环境初始化工作
         recv_init_crash_recovery();
       }
 #endif /* !UNIV_HOTBACKUP */
@@ -3473,32 +3585,41 @@ bool meb_scan_log_recs(
       recv_sys->scanned_checkpoint_no = log_block_get_checkpoint_no(log_block);
     }
 
+
+    // 解析redo日志终止的判断
+    //  - 读取redo日志的一个block（512字节），解析12字节的头（LOG_BLOCK_HDR_DATA_LEN），读取当前block中redo日志的长度
+    //       - 如果为512，则此block不为最后一个redo记录的block
+    //       - 如果小于512，则此block为mysql服务停止后，最后一个redo记录的block
+
+
+    // 如果当前 block 中 redo 的长度不足 512 ，则 redo 全部读取完成，退出循环。
     if (data_len < OS_FILE_LOG_BLOCK_SIZE) {
       /* Log data for this group ends here */
       finished = true;
-
       break;
-
     } else {
+      // 记录当前 redo 日志总长度
       log_block += OS_FILE_LOG_BLOCK_SIZE;
     }
 
   } while (log_block < buf + len);
 
+
+
+
+
   *read_upto_lsn = scanned_lsn;
 
-  if (recv_needed_recovery ||
-      (recv_is_from_backup && !recv_is_making_a_backup)) {
+  if (recv_needed_recovery || (recv_is_from_backup && !recv_is_making_a_backup)) {
     ++recv_scan_print_counter;
-
     if (finished || (recv_scan_print_counter % 80) == 0) {
       ib::info(ER_IB_MSG_725, ulonglong{scanned_lsn});
     }
   }
 
+  // 开始解析 parse buffer 内的 redo log 。
   if (more_data && !recv_sys->found_corrupt_log) {
     /* Try to parse more log records */
-
     recv_parse_log_recs(checkpoint_lsn);
 
 #ifndef UNIV_HOTBACKUP
@@ -3644,11 +3765,22 @@ static void recv_read_log_seg(log_t &log, byte *buf, lsn_t start_lsn,
 
 /** Scans log from a buffer and stores new log data to the parsing buffer.
 Parses and hashes the log records if new data found.
-@param[in,out]	log			redo log
-@param[in,out]	contiguous_lsn		log sequence number
-                                        until which all redo log has been
-                                        scanned */
+@param[in,out]	log			    redo log
+@param[in,out]	contiguous_lsn  log sequence number until which all redo log has been scanned */
+
+
+// 读 redo log 并解析
+
+
+// 调用链:
+// recv_recovery_begin
+//       |--> recv_scan_log_recs
+//               |--> recv_parse_log_recs
+//                           |--> recv_single_rec
+//                                       |--> recv_multi_rec
+
 static void recv_recovery_begin(log_t &log, lsn_t *contiguous_lsn) {
+
   mutex_enter(&recv_sys->mutex);
 
   recv_sys->len = 0;
@@ -3682,12 +3814,9 @@ static void recv_recovery_begin(log_t &log, lsn_t *contiguous_lsn) {
 
   mutex_exit(&recv_sys->mutex);
 
-  ulint max_mem =
-      UNIV_PAGE_SIZE * (buf_pool_get_n_pages() -
-                        (recv_n_pool_free_frames * srv_buf_pool_instances));
+  ulint max_mem = UNIV_PAGE_SIZE * (buf_pool_get_n_pages() - (recv_n_pool_free_frames * srv_buf_pool_instances));
 
-  *contiguous_lsn =
-      ut_uint64_align_down(*contiguous_lsn, OS_FILE_LOG_BLOCK_SIZE);
+  *contiguous_lsn = ut_uint64_align_down(*contiguous_lsn, OS_FILE_LOG_BLOCK_SIZE);
 
   lsn_t start_lsn = *contiguous_lsn;
 
@@ -3695,41 +3824,60 @@ static void recv_recovery_begin(log_t &log, lsn_t *contiguous_lsn) {
 
   bool finished = false;
 
+
+  // 该循环以 checkpoint 为起点，调用底层函数( recv_read_log_seg )，
+  // 按照 RECV_SCAN_SIZE(64KB) 大小分批读取日志数据到 log_sys->buf 中，
+  // 然后调用调用 recv_scan_log_recs 对读取到的数据进行扫描解析和应用，直到所有的日志都处理完毕。
   while (!finished) {
+
+    // 日志序号
     lsn_t end_lsn = start_lsn + RECV_SCAN_SIZE;
 
+    // 将 record 从 log 读取到 log.buf 中，并执行解析和应用
     recv_read_log_seg(log, log.buf, start_lsn, end_lsn);
 
-    finished = recv_scan_log_recs(log, max_mem, log.buf, RECV_SCAN_SIZE,
-                                  checkpoint_lsn, start_lsn, contiguous_lsn,
-                                  &log.scanned_lsn);
+    // 是否处理完毕
+    finished = recv_scan_log_recs(log, max_mem, log.buf, RECV_SCAN_SIZE, checkpoint_lsn, start_lsn, contiguous_lsn, &log.scanned_lsn);
 
+    // 下一轮循环
     start_lsn = end_lsn;
   }
 
   DBUG_PRINT("ib_log", ("scan " LSN_PF " completed", log.scanned_lsn));
 }
 
-/** Initialize crash recovery environment. Can be called iff
-recv_needed_recovery == false. */
+/** Initialize crash recovery environment. Can be called iff recv_needed_recovery == false. */
+
+
+// 进行崩溃恢复的环境初始化工作。
+//  - 半页写的恢复 (buf_dblwr_process)
+//      - 遍历 double write 物理文件拿到所有的 space_no 和 page_id ，去检查数据页是否完整。如果不完整进入下一步
+//      - 检查对应 double writer 的数据的完整性，如果不完整直接丢弃，记录错误日志，重新执行 redo log
+//      - 如果 double write 的数据是完整的，用 double buffer 的数据更新该数据页，跳过该 redo log。
+//  - 创建 recv_writer_thread
+//
+// recv_writer_thread 线程会和 page cleaner 线程配合使用，
+// 它会去通知 page cleaner 线程去 flush 崩溃恢复产生的脏页，
+// 直到 recv_sys 中存储的 redo 记录都被应用完成并彻底释放掉。
+
 static void recv_init_crash_recovery() {
   ut_ad(!srv_read_only_mode);
   ut_a(!recv_needed_recovery);
 
+  // 设置标志位，说明非正常停止，需要恢复
   recv_needed_recovery = true;
 
   ib::info(ER_IB_MSG_726);
   ib::info(ER_IB_MSG_727);
 
+  // 处理半页写的恢复 (double write)
   recv_sys->dblwr->recover();
 
   if (srv_force_recovery < SRV_FORCE_NO_LOG_REDO) {
-    /* Spawn the background thread to flush dirty pages
-    from the buffer pools. */
+    /* Spawn the background thread to flush dirty pages from the buffer pools. */
 
-    srv_threads.m_recv_writer =
-        os_thread_create(recv_writer_thread_key, recv_writer_thread);
-
+    // 创建并启动 recv_writer 线程
+    srv_threads.m_recv_writer = os_thread_create(recv_writer_thread_key, recv_writer_thread);
     srv_threads.m_recv_writer.start();
   }
 }
@@ -3742,18 +3890,28 @@ static void recv_init_crash_recovery() {
 @param[in]	flush_lsn	FIL_PAGE_FILE_FLUSH_LSN
                                 of first system tablespace page
 @return error code or DB_SUCCESS */
+
+// 主要分为2个阶段:
+//  - 首先是日志扫描阶段，扫描阶段按照数据页的 space_id 和 page_no 分发 redo 日志到 hash_table 中，
+//    保证同一个数据页的日志被分发到同一个哈希桶中，且按照 lsn 大小从小到大排序。
+//  - 扫描完后，再遍历整个哈希表，依次应用每个数据页的日志。
+//
+// 备注:
+//  传递的参数 flushed_lsn 即为从 ibdata 第一个 page 读取的 LSN 。
+//
 dberr_t recv_recovery_from_checkpoint_start(log_t &log, lsn_t flush_lsn) {
-  /* Initialize red-black tree for fast insertions into the
-  flush_list during recovery process. */
+
+  /* Initialize red-black tree for fast insertions into the flush_list during recovery process. */
+
+  // - 开始恢复前，为每个 buffer pool instance 创建一颗红黑树，指向 buffer_pool_t::flush_rbt，加速 flush list 插入速度(buf_flush_init_flush_rbt)。
   buf_flush_init_flush_rbt();
 
+  // - 无需恢复，直接返回
   if (srv_force_recovery >= SRV_FORCE_NO_LOG_REDO) {
     ib::info(ER_IB_MSG_728);
-
     /* We leave redo log not started and this is read-only mode. */
     ut_a(log.sn == 0);
     ut_a(srv_read_only_mode);
-
     return (DB_SUCCESS);
   }
 
@@ -3764,8 +3922,18 @@ dberr_t recv_recovery_from_checkpoint_start(log_t &log, lsn_t flush_lsn) {
   dberr_t err;
   ulint max_cp_field;
 
-  err = recv_find_max_checkpoint(log, &max_cp_field);
+  // 读取存储在第一个 redo log 文件(也即 ib_logfile0 文件) 头部的 CHECKPOINT LSN ，
+  // 并根据该 LSN 定位到 redo 日志文件中对应的位置，并从该 checkpoint 点开始扫描。
 
+  // [原理]
+  // 在日志头中有 2 个 checkpoint block 区域，记录最近的两次 checkpoint 信息。
+  //
+  // InnoDB 是采用 2 个 checkpoint 轮流写的方式来保证 checkpoint 写操作的安全（并不是一次写 2 份 checkpoint , 而是轮流写）。
+  // 由于 redo log 是幂等的，应用一次和与应用两次都是一样的(在实际的应用 redo log 时，如果当前这一条 log 记录的 lsn 大于当前 page 的 lsn ，
+  // 说明这一条 log 还没有被应用到当前的 page 中去)。
+  //
+  // 所以，即使某次 checkpoint block 写失败了，那么崩溃恢复的时候从上一次记录的 checkpoint 点开始恢复也能正确的恢复数据库事务。
+  err = recv_find_max_checkpoint(log, &max_cp_field);
   if (err != DB_SUCCESS) {
     return (err);
   }
@@ -3775,8 +3943,10 @@ dberr_t recv_recovery_from_checkpoint_start(log_t &log, lsn_t flush_lsn) {
   lsn_t checkpoint_lsn;
   checkpoint_no_t checkpoint_no;
 
+  // 从 buf 中取出 8 字节，并转换 long ，获取 checkpoint 时的 lsn 。
   checkpoint_lsn = mach_read_from_8(log.checkpoint_buf + LOG_CHECKPOINT_LSN);
 
+  //
   checkpoint_no = mach_read_from_8(log.checkpoint_buf + LOG_CHECKPOINT_NO);
 
   /* Read the first log file header to print a note if this is
@@ -3784,8 +3954,7 @@ dberr_t recv_recovery_from_checkpoint_start(log_t &log, lsn_t flush_lsn) {
   byte log_hdr_buf[LOG_FILE_HDR_SIZE];
   const page_id_t page_id{log.files_space_id, 0};
 
-  err = fil_redo_io(IORequestLogRead, page_id, univ_page_size, 0,
-                    LOG_FILE_HDR_SIZE, log_hdr_buf);
+  err = fil_redo_io(IORequestLogRead, page_id, univ_page_size, 0, LOG_FILE_HDR_SIZE, log_hdr_buf);
 
   ut_a(err == DB_SUCCESS);
 
@@ -3809,46 +3978,40 @@ dberr_t recv_recovery_from_checkpoint_start(log_t &log, lsn_t flush_lsn) {
 
     recv_sys->is_meb_recovery = true;
 
+    // 如果开启了只读，进行完一些列初始化工作后，函数会直接返回，不会进入恢复操作。
     if (srv_read_only_mode) {
       ib::error(ER_IB_MSG_729);
-
       return (DB_ERROR);
     }
 
-    /* This log file was created by mysqlbackup --restore: print
-    a note to the user about it */
+    /* This log file was created by mysqlbackup --restore: print a note to the user about it */
 
-    ib::info(ER_IB_MSG_730,
-             reinterpret_cast<const char *>(log_hdr_buf) + LOG_HEADER_CREATOR);
+    ib::info(ER_IB_MSG_730, reinterpret_cast<const char *>(log_hdr_buf) + LOG_HEADER_CREATOR);
 
     /* Replace the label. */
-    ut_ad(LOG_HEADER_CREATOR_END - LOG_HEADER_CREATOR >=
-          sizeof LOG_HEADER_CREATOR_CURRENT);
+    ut_ad(LOG_HEADER_CREATOR_END - LOG_HEADER_CREATOR >= sizeof LOG_HEADER_CREATOR_CURRENT);
 
-    memset(log_hdr_buf + LOG_HEADER_CREATOR, 0,
-           LOG_HEADER_CREATOR_END - LOG_HEADER_CREATOR);
+    memset(log_hdr_buf + LOG_HEADER_CREATOR, 0, LOG_HEADER_CREATOR_END - LOG_HEADER_CREATOR);
 
-    strcpy(reinterpret_cast<char *>(log_hdr_buf) + LOG_HEADER_CREATOR,
-           LOG_HEADER_CREATOR_CURRENT);
+    strcpy(reinterpret_cast<char *>(log_hdr_buf) + LOG_HEADER_CREATOR, LOG_HEADER_CREATOR_CURRENT);
 
     /* Re-calculate the header block checksum. */
-    log_block_set_checksum(log_hdr_buf,
-                           log_block_calc_checksum_crc32(log_hdr_buf));
+    log_block_set_checksum(log_hdr_buf, log_block_calc_checksum_crc32(log_hdr_buf));
 
     /* Write to the log file to wipe over the label */
-    err = fil_redo_io(IORequestLogWrite, page_id, univ_page_size, 0,
-                      OS_FILE_LOG_BLOCK_SIZE, log_hdr_buf);
+    err = fil_redo_io(IORequestLogWrite, page_id, univ_page_size, 0, OS_FILE_LOG_BLOCK_SIZE, log_hdr_buf);
 
     ut_a(err == DB_SUCCESS);
 
-  } else if (0 == ut_memcmp(log_hdr_buf + LOG_HEADER_CREATOR,
-                            (byte *)LOG_HEADER_CREATOR_CLONE,
-                            (sizeof LOG_HEADER_CREATOR_CLONE) - 1)) {
+  } else if (0 == ut_memcmp(log_hdr_buf + LOG_HEADER_CREATOR, (byte *)LOG_HEADER_CREATOR_CLONE, (sizeof LOG_HEADER_CREATOR_CLONE) - 1)) {
+
     /* Refuse clone database recovery in read only mode. */
+    // 如果开启了只读，进行完一些列初始化工作后，函数会直接返回，不会进入恢复操作。
     if (srv_read_only_mode) {
       ib::error(ER_IB_MSG_736);
       return (DB_READ_ONLY);
     }
+
     recv_sys->is_cloned_db = true;
     ib::info(ER_IB_MSG_731);
   }
@@ -3893,21 +4056,29 @@ dberr_t recv_recovery_from_checkpoint_start(log_t &log, lsn_t flush_lsn) {
   /* NOTE: we always do a 'recovery' at startup, but only if
   there is something wrong we will print a message to the
   user about recovery: */
-
+  //
+  //
+  // 判断 checkpoint_lsn 与 flush_lsn 是否相等，不想等则需要恢复。
   if (checkpoint_lsn != flush_lsn) {
+
+    // 异常情况
     if (checkpoint_lsn < flush_lsn) {
       ib::warn(ER_IB_MSG_734, ulonglong{checkpoint_lsn}, ulonglong{flush_lsn});
     }
 
+    // 不需要恢复？
     if (!recv_needed_recovery) {
       ib::info(ER_IB_MSG_735, ulonglong{flush_lsn}, ulonglong{checkpoint_lsn});
 
+      // 只读模式，直接返回
       if (srv_read_only_mode) {
         ib::error(ER_IB_MSG_736);
-
         return (DB_READ_ONLY);
       }
 
+      // 进行崩溃恢复的环境初始化工作。
+      //  - 半页写的恢复 (buf_dblwr_process)
+      //  - 创建 recv_writer_thread
       recv_init_crash_recovery();
     }
   }
@@ -3915,6 +4086,11 @@ dberr_t recv_recovery_from_checkpoint_start(log_t &log, lsn_t flush_lsn) {
   contiguous_lsn = checkpoint_lsn;
 
   /* 从 checkpoint 文件记录的 lsn 开始进行 recovery. */
+  //
+  // [重点]
+  // 在 recv_recovery_begin 中，存在一个循环，该循环以 checkpoint 为起点，
+  // 调用底层函数(recv_read_log_seg)，按照 RECV_SCAN_SIZE(64KB) 大小分批读取日志数据到 log_sys->buf 中，
+  // 然后调用调用 recv_scan_log_recs 对读取到的数据进行扫描解析和应用，直到所有的日志都处理完毕。
   recv_recovery_begin(log, &contiguous_lsn);
 
   lsn_t recovered_lsn;
@@ -3931,10 +4107,8 @@ dberr_t recv_recovery_from_checkpoint_start(log_t &log, lsn_t flush_lsn) {
     check_scanned_lsn += LOG_BLOCK_HDR_SIZE;
   }
 
-  if (check_scanned_lsn < checkpoint_lsn ||
-      check_scanned_lsn < recv_max_page_lsn) {
-    ib::error(ER_IB_MSG_737, ulonglong{log.scanned_lsn},
-              ulonglong{checkpoint_lsn}, ulonglong{recv_max_page_lsn});
+  if (check_scanned_lsn < checkpoint_lsn || check_scanned_lsn < recv_max_page_lsn) {
+    ib::error(ER_IB_MSG_737, ulonglong{log.scanned_lsn}, ulonglong{checkpoint_lsn}, ulonglong{recv_max_page_lsn});
   }
 
   if (recovered_lsn < checkpoint_lsn) {
@@ -3942,7 +4116,6 @@ dberr_t recv_recovery_from_checkpoint_start(log_t &log, lsn_t flush_lsn) {
     if (!srv_read_only_mode) {
       ut_error;
     }
-
     return (DB_ERROR);
   }
 
@@ -3969,8 +4142,8 @@ dberr_t recv_recovery_from_checkpoint_start(log_t &log, lsn_t flush_lsn) {
   std::memcpy(log_buf_block, recv_sys->last_block, OS_FILE_LOG_BLOCK_SIZE);
 
   if (recv_sys->last_block_first_rec_group != 0 &&
-      log_block_get_first_rec_group(log_buf_block) !=
-          recv_sys->last_block_first_rec_group) {
+    log_block_get_first_rec_group(log_buf_block) != recv_sys->last_block_first_rec_group) {
+
     /* We must not start with invalid first_rec_group in the first block,
     because if we crashed, we could be unable to recover. We do NOT have
     guarantee that the first_rec_group was correct because recovery did
@@ -4028,8 +4201,13 @@ dberr_t recv_recovery_from_checkpoint_start(log_t &log, lsn_t flush_lsn) {
 @param[in,out]	log		redo log
 @param[in]	aborting	true if the server has to abort due to an error
 @return recovered persistent metadata or nullptr if aborting*/
-MetadataRecover *recv_recovery_from_checkpoint_finish(log_t &log,
-                                                      bool aborting) {
+//
+//
+// 在完成所有redo日志apply后，基本的崩溃恢复也完成了，此时可以释放资源，
+// 等待 recv writer 线程退出 (崩溃恢复产生的脏页已经被清理掉)，释放红黑树，
+// 回滚所有数据词典操作产生的非 prepare 状态的事务。
+//
+MetadataRecover *recv_recovery_from_checkpoint_finish(log_t &log, bool aborting) {
   /* Make sure that the recv_writer thread is done. This is
   required because it grabs various mutexes and we want to
   ensure that when we enable sync_order_checks there is no
@@ -4083,26 +4261,22 @@ MetadataRecover *recv_recovery_from_checkpoint_finish(log_t &log,
     /* Bitmap page types will be reset in buf_dblwr_check_block()
     without redo logging. */
 
-    block = buf_page_get(page_id_t(IBUF_SPACE_ID, FSP_IBUF_HEADER_PAGE_NO),
-                         univ_page_size, RW_X_LATCH, &mtr);
+    block = buf_page_get(page_id_t(IBUF_SPACE_ID, FSP_IBUF_HEADER_PAGE_NO), univ_page_size, RW_X_LATCH, &mtr);
 
     fil_block_check_type(block, FIL_PAGE_TYPE_SYS, &mtr);
 
     /* Already MySQL 3.23.53 initialized FSP_IBUF_TREE_ROOT_PAGE_NO
     to FIL_PAGE_INDEX. No need to reset that one. */
 
-    block = buf_page_get(page_id_t(TRX_SYS_SPACE, TRX_SYS_PAGE_NO),
-                         univ_page_size, RW_X_LATCH, &mtr);
+    block = buf_page_get(page_id_t(TRX_SYS_SPACE, TRX_SYS_PAGE_NO), univ_page_size, RW_X_LATCH, &mtr);
 
     fil_block_check_type(block, FIL_PAGE_TYPE_TRX_SYS, &mtr);
 
-    block = buf_page_get(page_id_t(TRX_SYS_SPACE, FSP_FIRST_RSEG_PAGE_NO),
-                         univ_page_size, RW_X_LATCH, &mtr);
+    block = buf_page_get(page_id_t(TRX_SYS_SPACE, FSP_FIRST_RSEG_PAGE_NO), univ_page_size, RW_X_LATCH, &mtr);
 
     fil_block_check_type(block, FIL_PAGE_TYPE_SYS, &mtr);
 
-    block = buf_page_get(page_id_t(TRX_SYS_SPACE, FSP_DICT_HDR_PAGE_NO),
-                         univ_page_size, RW_X_LATCH, &mtr);
+    block = buf_page_get(page_id_t(TRX_SYS_SPACE, FSP_DICT_HDR_PAGE_NO), univ_page_size, RW_X_LATCH, &mtr);
 
     fil_block_check_type(block, FIL_PAGE_TYPE_SYS, &mtr);
 

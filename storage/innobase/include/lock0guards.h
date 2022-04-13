@@ -39,6 +39,7 @@ A RAII helper which latches global_latch in exclusive mode during constructor,
 and unlatches it during destruction, preventing any other threads from activity
 within lock_sys for it's entire scope.
 */
+/* global_latch X 锁. */
 class Global_exclusive_latch_guard : private ut::Non_copyable {
  public:
   Global_exclusive_latch_guard(ut::Location location);
@@ -70,6 +71,7 @@ and unlatches it during destruction, preventing any other thread from acquiring
 exclusive latch. This should be used in combination Shard_naked_latch_guard,
 preferably by simply using Shard_latch_guard which combines the two for you.
 */
+/* global_latch S 锁. */
 class Global_shared_latch_guard : private ut::Non_copyable {
  public:
   Global_shared_latch_guard(ut::Location location);
@@ -110,6 +112,7 @@ Shard_naked_latch_guard to s-latch the global lock_sys latch and latch the mutex
 protecting the specified shard for the duration of its scope.
 The order of initialization is important: we have to take shared global latch
 BEFORE we attempt to use hash function to compute correct shard and latch it. */
+/* 单个 shard mutex. */
 class Shard_latch_guard {
   Global_shared_latch_guard m_global_shared_latch_guard;
   Shard_naked_latch_guard m_shard_naked_latch_guard;
@@ -136,14 +139,12 @@ You should use it in combination with Global_shared_latch_guard, so that you
 first obtain an s-latch on the global_latch, or simply use the
 Shard_latches_guard class which already combines the two for you.
 */
+/* Shard_naked_latches_guard 并不直接使用, 由 Shard_latch_guard 或 Shard_latches_guard 包装 global_latch 联合使用. */
 class Shard_naked_latches_guard {
-  explicit Shard_naked_latches_guard(Lock_mutex &shard_mutex_a,
-                                     Lock_mutex &shard_mutex_b);
+  explicit Shard_naked_latches_guard(Lock_mutex &shard_mutex_a, Lock_mutex &shard_mutex_b);
 
  public:
-  explicit Shard_naked_latches_guard(const buf_block_t &block_a,
-                                     const buf_block_t &block_b);
-
+  explicit Shard_naked_latches_guard(const buf_block_t &block_a, const buf_block_t &block_b);
   ~Shard_naked_latches_guard();
 
  private:
@@ -163,6 +164,7 @@ both pages are in the same shard correctly.
 The order of initialization is important: we have to take shared global latch
 BEFORE we attempt to use hash function to compute correct shard and latch it.
 */
+/* 两个 shard mutex, 用于两个 Page 的 record lock 处理, 例如页迁移. */
 class Shard_latches_guard {
  public:
   explicit Shard_latches_guard(ut::Location location,

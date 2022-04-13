@@ -311,21 +311,22 @@ datafile, which must already be open.
 @param[in]	read_only_mode	If true, then readonly mode checks are enforced.
 @return DB_SUCCESS or DB_IO_ERROR if page cannot be read */
 dberr_t Datafile::read_first_page(bool read_only_mode) {
+
+  // 已关闭，退出
   if (m_handle.m_file == OS_FILE_CLOSED) {
     dberr_t err = open_or_create(read_only_mode);
-
     if (err != DB_SUCCESS) {
       return (err);
     }
   }
 
-  m_first_page_buf =
-      static_cast<byte *>(ut_malloc_nokey(2 * UNIV_PAGE_SIZE_MAX));
+  // 内存分配
+  m_first_page_buf = static_cast<byte *>(ut_malloc_nokey(2 * UNIV_PAGE_SIZE_MAX));
 
   /* Align the memory for a possible read from a raw device */
+  // 内存对齐
+  m_first_page = static_cast<byte *>(ut_align(m_first_page_buf, UNIV_PAGE_SIZE));
 
-  m_first_page =
-      static_cast<byte *>(ut_align(m_first_page_buf, UNIV_PAGE_SIZE));
 
   IORequest request;
   dberr_t err = DB_ERROR;
@@ -335,34 +336,37 @@ dberr_t Datafile::read_first_page(bool read_only_mode) {
 
   request.disable_partial_io_warnings();
 
+
+  // UNIV_PAGE_SIZE_MAX: 页面最大值，16KB
+  // UNIV_PAGE_SIZE_DEF: 页面默认值，16KB
+  // UNIV_PAGE_SIZE_MIN: 页面最小值，4KB
+
+  //
   while (page_size >= UNIV_PAGE_SIZE_MIN) {
+    // 读取字节数
     ulint n_read = 0;
 
-    err = os_file_read_no_error_handling(request, m_filename, m_handle,
-                                         m_first_page, 0, page_size, &n_read);
+    // 从 m_filename 中的 offset=0 处，读取一页数据到 m_first_page 中，读取的数据数存储在 n_read 中。
+    // 底层调用 os_file_read_page 来实现。
+    err = os_file_read_no_error_handling(request, m_filename, m_handle, m_first_page, 0, page_size, &n_read);
 
+    // 增加页面大小
     if (err == DB_IO_ERROR && n_read >= UNIV_PAGE_SIZE_MIN) {
       page_size >>= 1;
-
     } else if (err == DB_SUCCESS) {
       ut_a(n_read == page_size);
-
       break;
-
     } else {
-      ib::error(ER_IB_MSG_393) << "Cannot read first page of '" << m_filepath
-                               << "' " << ut_strerr(err);
+      ib::error(ER_IB_MSG_393) << "Cannot read first page of '" << m_filepath << "' " << ut_strerr(err);
       break;
     }
   }
 
+  //
   if (err == DB_SUCCESS && m_order == 0) {
     m_flags = fsp_header_get_flags(m_first_page);
-
     m_space_id = fsp_header_get_space_id(m_first_page);
-
     m_server_version = fsp_header_get_server_version(m_first_page);
-
     m_space_version = fsp_header_get_space_version(m_first_page);
   }
 
@@ -386,8 +390,7 @@ in order for this function to validate it.
 @param[in]	for_import	if it is for importing
 @retval DB_SUCCESS if tablespace is valid, DB_ERROR if not.
 m_is_valid is also set true on success, else false. */
-dberr_t Datafile::validate_to_dd(space_id_t space_id, uint32_t flags,
-                                 bool for_import) {
+dberr_t Datafile::validate_to_dd(space_id_t space_id, uint32_t flags, bool for_import) {
   dberr_t err;
 
   if (!is_open()) {
@@ -402,8 +405,7 @@ dberr_t Datafile::validate_to_dd(space_id_t space_id, uint32_t flags,
     return (err);
   }
 
-  if (m_space_id == space_id && FSP_FLAGS_ARE_NOT_SET(flags) &&
-      fsp_is_dd_tablespace(space_id)) {
+  if (m_space_id == space_id && FSP_FLAGS_ARE_NOT_SET(flags) && fsp_is_dd_tablespace(space_id)) {
     return (DB_SUCCESS);
   }
 
@@ -415,8 +417,7 @@ dberr_t Datafile::validate_to_dd(space_id_t space_id, uint32_t flags,
   in table flags in dictionary */
 
   if (m_space_id == space_id &&
-      !((m_flags ^ flags) & ~(FSP_FLAGS_MASK_DATA_DIR | FSP_FLAGS_MASK_SHARED |
-                              FSP_FLAGS_MASK_SDI))) {
+      !((m_flags ^ flags) & ~(FSP_FLAGS_MASK_DATA_DIR | FSP_FLAGS_MASK_SHARED | FSP_FLAGS_MASK_SDI))) {
     /* Datafile matches the tablespace expected. */
     return (DB_SUCCESS);
   }
@@ -424,8 +425,7 @@ dberr_t Datafile::validate_to_dd(space_id_t space_id, uint32_t flags,
   /* For a shared tablesapce, it is possible that encryption flag updated in
   the ibd file, but the server crashed before DD flags are updated. Exclude
   encryption flags for that scenario. */
-  if ((FSP_FLAGS_GET_ENCRYPTION(flags) != FSP_FLAGS_GET_ENCRYPTION(m_flags)) &&
-      fsp_is_shared_tablespace(flags)) {
+  if ((FSP_FLAGS_GET_ENCRYPTION(flags) != FSP_FLAGS_GET_ENCRYPTION(m_flags)) && fsp_is_shared_tablespace(flags)) {
 #ifndef UNIV_HOTBACKUP
 #ifdef UNIV_DEBUG
     /* Note this tablespace id down and assert that it is in the list of
@@ -435,8 +435,7 @@ dberr_t Datafile::validate_to_dd(space_id_t space_id, uint32_t flags,
 #endif /* !UNIV_HOTBACKUP */
 
     if (!((m_flags ^ flags) &
-          ~(FSP_FLAGS_MASK_ENCRYPTION | FSP_FLAGS_MASK_DATA_DIR |
-            FSP_FLAGS_MASK_SHARED | FSP_FLAGS_MASK_SDI))) {
+          ~(FSP_FLAGS_MASK_ENCRYPTION | FSP_FLAGS_MASK_DATA_DIR | FSP_FLAGS_MASK_SHARED | FSP_FLAGS_MASK_SDI))) {
       return (DB_SUCCESS);
     }
   }

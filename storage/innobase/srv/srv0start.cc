@@ -1861,6 +1861,63 @@ static lsn_t srv_prepare_to_delete_redo_log_files(ulint n_files) {
   return (flushed_lsn);
 }
 
+
+//innobase_init()
+// |-innobase_start_or_create_for_mysql()
+//   |
+//   |-recv_sys_create()   创建崩溃恢复所需要的内存对象
+//   |-recv_sys_init()
+//   | |-hash_create()
+//   |
+//   |-srv_sys_space.check_file_spce()                检查系统表空间是否正常
+//   |-srv_sys_space.open_or_create()              1. 打开系统表空间，并获取flushed_lsn
+//   | |-read_lsn_and_check_flags()
+//   |   |-open_or_create()
+//   |   |-read_first_page()
+//   |   |-buf_dblwr_init_or_load_pages()             将双写缓存加载到内存中，如果ibdata日志损坏，则通过dblwr恢复
+//   |   |-validate_first_page()                      校验第一个页是否正常，并读取flushed_lsn
+//   |   | |-mach_read_from_8()                       读取LSN，偏移为FIL_PAGE_FILE_FLUSH_LSN
+//   |   |-restore_from_doublewrite()                 如果有异常，则从dblwr恢复
+//   |
+//   |-log_group_init()                               redo log的结构初始化
+//   |-srv_undo_tablespaces_init()                    对于undo log表空间恢复结构初始化
+//   |
+//   |-recv_recovery_from_checkpoint_start()       2. 从redo-log的checkpoint开始恢复；注意，正常启动也会调用
+//   | |-buf_flush_init_flush_rbt()                   创建一个红黑树，用于加速插入flush list
+//   | |                                              通过force_recovery判断是否大于SRV_FORCE_NO_LOG_REDO
+//   | |-recv_find_max_checkpoint()                   查找最新的checkpoint点，在此会校验redo log的头部信息
+//   | | |-log_group_header_read()                    读取512字节的头部信息
+//   | | |-mach_read_from_4()                         读取redo log的版本号LOG_HEADER_FORMAT
+//   | | |-recv_check_log_header_checksum()           版本1则校验页的完整性
+//   | | | |-log_block_get_checksum()                 获取页中的checksum，也就是页中的最后四个字节
+//   | | | |-log_block_calc_checksum_crc32()          并与计算后的checksum比较
+//   | | |-recv_find_max_checkpoint_0()
+//   | |   |-log_group_header_read()
+//   | |
+//   | |-recv_group_scan_log_recs()                3.1 从checkpoint-lsn处开始查找MLOG_CHECKPOINT
+//   | | |-log_group_read_log_seg()                   从文件中读取64K日志，并未校验
+//   | | |-recv_scan_log_recs()
+//   | |   |-log_block_get_hdr_no()
+//   | |   |-log_block_convert_lsn_to_no()
+//   | |   |-log_block_checksum_is_ok()               校验页是否正常
+//   | |   |-recv_parse_log_recs()                    解析redo-log，并添加到hash表中
+//   | |     |-recv_add_to_hash_table()
+//   | |       |-recv_hash()
+//   | |
+//   | |-recv_group_scan_log_recs()
+//   | |                                              ##如果flushed_lsn和checkponit lsn不同则恢复
+//   | |-recv_init_crash_recovery()
+//   | |-recv_init_crash_recovery_spaces()
+//   | |
+//   | |-recv_group_scan_log_recs()
+//   |
+//   |-trx_sys_init_at_db_start()
+//   |
+//   |-recv_apply_hashed_log_recs()                    当页LSN小于log-record中的LSN时，应用redo日志
+//   | |-recv_recover_page()                           实际调用recv_recover_page_func()
+//   |   |-recv_parse_or_apply_log_rec_body()
+//   |
+//   |-recv_recovery_from_checkpoint_finish()          完成崩溃恢复
 dberr_t srv_start(bool create_new_db) {
   lsn_t flushed_lsn;
 
@@ -2133,8 +2190,19 @@ dberr_t srv_start(bool create_new_db) {
 
   fsp_init();
   pars_init();
+
+
+  // 创建并初始化 recv_sys 数据结构，该数据结构主要用来数据的恢复。
+  //
+  // 所有等待恢复的日志数据最终都先加载到 redo log buf，再解析 buf 到 recv_sys 的哈希表中。
+  // 最终通过哈希表存储的日志数据，来进行数据的恢复。
+  //
+  // Q: 为什么要用hash？
+  // A: 对于相同页的数据，方便查找。
+  //
   recv_sys_create();
   recv_sys_init(buf_pool_get_curr_size());
+
   trx_sys_create();
   lock_sys_create(srv_lock_table_size);
   srv_start_state_set(SRV_START_STATE_LOCK_SYS);
@@ -2181,8 +2249,54 @@ dberr_t srv_start(bool create_new_db) {
   /* Open or create the data files. */
   page_no_t sum_of_new_sizes;
 
-  err = srv_sys_space.open_or_create(false, create_new_db, &sum_of_new_sizes,
-                                     &flushed_lsn);
+
+  // [原理]
+
+
+  // [读取 flushed_lsn]
+  //
+  // 数据库启动后，InnoDB 会读取系统表空间(ibdata)中的 flushed_lsn ，这一个 LSN 只在系统表空间(ibdata)的第一个页中存在，而且只有在正常关闭的时候写入。
+  // 系统正常关闭时，在 flush redo log 和脏页后，会执行一次完全同步的 sharp checkpoint ，并将 checkpoint 的 LSN 写到系统表空间(ibdata)的第一个 page 中，作为 flushed_lsn 。
+  //
+  // 需要注意的是：
+  //   - 写 flushed_lsn 时会同时写入到 Double Write Buffer ，如果 flushed_lsn 对应的页损坏，则可以从 dbwl 中进行恢复。
+  //   - flushed_lsn 只有在系统表空间的第一页存在，偏移量为 FIL_PAGE_FILE_FLUSH_LSN(26)，其值意味着在此 LSN 之前的页已经刷型到磁盘。
+
+  // [读取 checkpoint_lsn]
+  //
+  // 接下来，InnoDB 会通过 redo-log 日志找到最近一次提交的 checkpoint，读取该 checkpoint 对应的 LSN ，即 checkpoint_lsn 。
+  // checkpoint 信息会保存在 redo-log 的第一个文件中，在两个固定偏移中轮流写入；所以，需要同时读取两个，并比较获取较大的一个值。
+
+  // [比较 flushed_lsn 以及 checkpoint_lsn ]
+  // 如果两者相同，则说明正常关闭；否则，就需要进行故障恢复。
+
+  // [执行恢复]
+  //
+  // 如果需要执行崩溃恢复，InnoDB 会根据扫描 redo-log 得到 checkpoint 信息，定位 ib_logfileX 文件中的某个位置，
+  // 从该位置开始读取日志，并保存到一个哈希表中，最后通过遍历哈希表中的 redo log 信息，读取相关页进行恢复。
+  //
+  // 步骤：
+  //   - 从 ib_logfileX 的指定位置开始读取 redo log，每次读取 RECV_SCAN_SIZE (4*page_size=64k) 大小，写入时是以 block(512B) 为单位；
+  //   - 将从文件中读取的日志保存在 recv_sys->buf 中，然后进行校验，并解析日志，
+  //     然后将结果保存在以 (space, page_no) 做 key 的 recv_sys->addr_hash 表中，
+  //     这样一个 key 就对应了一个数据页的修改；
+  //
+  // redo log 被保存到哈希表中之后，InnoDB 就可以开始进行数据恢复，
+  // 只需要轮询哈希表中的每个节点获取 redo 信息，根据 (space, page_no) 读取指定的数据页，
+  // 并进行日志覆盖。
+
+  // [优化]
+  //
+  // 在恢复时，需要获取 space id 与 *.ibd 文件的对应关系，这就需要打开所有的 ibd 文件获取，
+  // 如果文件有成百上千、甚至以万计的时候，那么这一操作将会非常耗时。
+  //
+  // 为此，5.7 在 redo log 中添加了两个新的类型：
+  //    - MLOG_FILE_NAME 记录在 checkpoint 之后，所有被修改过的信息 (space, filepath)；
+  //    - MLOG_CHECKPOINT 用于标志 MLOG_FILE_NAME 的结束。
+
+  // 读取 ibdata1 文件的第一个 page 的 FIL_PAGE_FILE_FLUSH_LSN 偏移位置存储的 lsn ，即 flushed_lsn 。
+  // 如果 ibdata1 文件的第一个 page 损坏了，就从 dblwr 中恢复出来。
+  err = srv_sys_space.open_or_create(false, create_new_db, &sum_of_new_sizes, &flushed_lsn);
 
   /* FIXME: This can be done earlier, but we now have to wait for
   checking of system tablespace. */
@@ -2218,8 +2332,7 @@ dberr_t srv_start(bool create_new_db) {
 
     flushed_lsn = LOG_START_LSN;
 
-    err = create_log_files(logfilename, dirnamelen, flushed_lsn, 0, logfile0,
-                           new_checkpoint_lsn);
+    err = create_log_files(logfilename, dirnamelen, flushed_lsn, 0, logfile0, new_checkpoint_lsn);
 
     if (err != DB_SUCCESS) {
       return (srv_init_abort(err));
@@ -2366,10 +2479,7 @@ files_checked:
 
   if (create_new_db) {
     ut_a(!srv_read_only_mode);
-
-    ut_a(log_sys->last_checkpoint_lsn.load() ==
-         LOG_START_LSN + LOG_BLOCK_HDR_SIZE);
-
+    ut_a(log_sys->last_checkpoint_lsn.load() == LOG_START_LSN + LOG_BLOCK_HDR_SIZE);
     ut_a(flushed_lsn == LOG_START_LSN + LOG_BLOCK_HDR_SIZE);
 
     log_start(*log_sys, 0, flushed_lsn, flushed_lsn);
@@ -2377,7 +2487,6 @@ files_checked:
     log_start_background_threads(*log_sys);
 
     err = srv_undo_tablespaces_init(true);
-
     if (err != DB_SUCCESS) {
       return (srv_init_abort(err));
     }
@@ -2426,8 +2535,7 @@ files_checked:
     err = fil_write_flushed_lsn(flushed_lsn);
     ut_a(err == DB_SUCCESS);
 
-    create_log_files_rename(logfilename, dirnamelen, new_checkpoint_lsn,
-                            logfile0);
+    create_log_files_rename(logfilename, dirnamelen, new_checkpoint_lsn,logfile0);
 
     log_start_background_threads(*log_sys);
 
@@ -2463,16 +2571,15 @@ files_checked:
     /* We always try to do a recovery, even if the database had
     been shut down normally: this is the normal startup path */
 
-    /* InnoDB 开始 recover. */
+    // 开始执行宕机恢复
+    //
+    // 传递的参数 flushed_lsn 即为从 ibdata 第一个 page 读取的 LSN 。
     err = recv_recovery_from_checkpoint_start(*log_sys, flushed_lsn);
-
     if (err == DB_SUCCESS) {
       arch_page_sys->post_recovery_init();
-
       /* Initialize the change buffer. */
       err = dict_boot();
     }
-
     if (err != DB_SUCCESS) {
       return (srv_init_abort(err));
     }

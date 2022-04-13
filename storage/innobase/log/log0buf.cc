@@ -817,6 +817,16 @@ void log_wait_for_space_in_log_buf(log_t &log, sn_t end_sn) {
   ut_a(end_sn + OS_FILE_LOG_BLOCK_SIZE <= log_translate_lsn_to_sn(log.write_lsn.load()) + buf_size_sn);
 }
 
+// [原理]
+//
+//  高并发的环境中，会同时有非常多的 mtr 需要拷贝数据到 Log Buffer ，如果通过锁互斥，那么毫无疑问这里将成为明显的性能瓶颈。
+//  为此，从 MySQL 8.0 开始，设计了一套无锁的写 log 机制，其核心思路是引入 recent_written ，允许不同的 mtr ，
+//  同时并发地写 Log Buffer 的不同位置。
+//
+//  不同的 mtr 会首先调用 log_buffer_reserve 函数，这个函数里会用自己的 REDO 长度，原子地对全局偏移 log.sn 做 fetch_add ，
+//  得到自己在 Log Buffer 中独享的空间，之后不同 mtr 并行的将自己的 m_log 中的数据拷贝到各自独享的空间内。
+//
+//
 //
 // log_buffer_reserve 执行过程：
 //
@@ -1045,8 +1055,7 @@ lsn_t log_buffer_write(log_t &log, const Log_handle &handle, const byte *str, si
 
       ut_a((uintptr_t(ptr) & ~uintptr_t(LOG_BLOCK_HDR_SIZE)) % OS_FILE_LOG_BLOCK_SIZE == 0);
 
-      log_block_set_first_rec_group(
-          reinterpret_cast<byte *>(uintptr_t(ptr) & ~uintptr_t(LOG_BLOCK_HDR_SIZE)), 0);
+      log_block_set_first_rec_group(reinterpret_cast<byte *>(uintptr_t(ptr) & ~uintptr_t(LOG_BLOCK_HDR_SIZE)), 0);
 
       if (str_len == 0) {
         /* We have finished at the boundary. */
