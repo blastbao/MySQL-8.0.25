@@ -2805,11 +2805,14 @@ static ulint recv_parse_log_rec(mlog_id_t *type, // 类型
   UNIV_MEM_INVALID(page_no, sizeof *page_no);
   UNIV_MEM_INVALID(body, sizeof *body);
 
+
+  // 空
   if (ptr == end_ptr) {
     return (0);
   }
 
   switch (*ptr) {
+
 #ifdef UNIV_LOG_LSN_DEBUG
     case MLOG_LSN | MLOG_SINGLE_REC_FLAG:
     case MLOG_LSN:
@@ -2825,6 +2828,7 @@ static ulint recv_parse_log_rec(mlog_id_t *type, // 类型
       *type = MLOG_LSN;
       return (new_ptr == nullptr ? 0 : new_ptr - ptr);
 #endif /* UNIV_LOG_LSN_DEBUG */
+
 
     case MLOG_MULTI_REC_END:
     case MLOG_DUMMY_RECORD:
@@ -2856,6 +2860,7 @@ static ulint recv_parse_log_rec(mlog_id_t *type, // 类型
       return (new_ptr == nullptr ? 0 : new_ptr - ptr);
   }
 
+  //
   new_ptr = mlog_parse_initial_log_record(ptr, end_ptr, type, space_id, page_no);
 
   *body = new_ptr;
@@ -3043,25 +3048,29 @@ static bool recv_single_rec(byte *ptr, byte *end_ptr) {
 }
 
 /** Parse and store a multiple record log entry.
-@param[in]	ptr		start of buffer
+@param[in]	ptr		    start of buffer
 @param[in]	end_ptr		end of buffer
 @return true if end of processing */
 static bool recv_multi_rec(byte *ptr, byte *end_ptr) {
   /* Check that all the records associated with the single mtr
   are included within the buffer */
 
+  // 总记录数
   ulint n_recs = 0;
+  // 总长度
   ulint total_len = 0;
 
   for (;;) {
+    // 待解析字段
     mlog_id_t type = MLOG_BIGGEST_TYPE;
     byte *body;
     page_no_t page_no = 0;
     space_id_t space_id = 0;
 
-    // 根据规则解析出日志的 type,space_id,page_no, 以及 body 。
+    // 解析 log record ，得到 type,space_id,page_no, 以及 body 。
     ulint len = recv_parse_log_rec(&type, ptr, end_ptr, &space_id, &page_no, &body);
 
+    // 解析失败，报错返回
     if (recv_sys->found_corrupt_log) {
       recv_report_corrupt_log(ptr, type, space_id, page_no);
       return (true);
@@ -3075,11 +3084,14 @@ static bool recv_multi_rec(byte *ptr, byte *end_ptr) {
       return (true);
     }
 
+    // 保存 log record
     recv_sys->save_rec(n_recs, space_id, page_no, type, body, len);
+
     recv_previous_parsed_rec_type = type;
     recv_previous_parsed_rec_offset = recv_sys->recovered_offset + total_len;
     recv_previous_parsed_rec_is_multi = 1;
 
+    // 记录数/长度 ++
     total_len += len;
     ++n_recs;
 
@@ -3093,8 +3105,8 @@ static bool recv_multi_rec(byte *ptr, byte *end_ptr) {
     DBUG_PRINT("ib_log", ("scan " LSN_PF ": multi-log rec %s len " ULINTPF " " PAGE_ID_PF,  recv_sys->recovered_lsn, get_mlog_string(type), len, space_id, page_no));
   }
 
+  //
   lsn_t new_recovered_lsn = recv_calc_lsn_on_data_add(recv_sys->recovered_lsn, total_len);
-
   if (new_recovered_lsn > recv_sys->scanned_lsn) {
     /* The log record filled a log block, and we require
     that also the next log block should have been scanned in */
@@ -3105,6 +3117,7 @@ static bool recv_multi_rec(byte *ptr, byte *end_ptr) {
 
   ptr = recv_sys->buf + recv_sys->recovered_offset;
 
+  // 遍历每个 record ，逐个添加到 hash table 中。
   for (ulint i = 0; i < n_recs; i++) {
     lsn_t old_lsn = recv_sys->recovered_lsn;
 
@@ -3169,6 +3182,7 @@ static bool recv_multi_rec(byte *ptr, byte *end_ptr) {
         }
 
         if (recv_recovery_on) {
+
 #ifndef UNIV_HOTBACKUP
           if (space_id == TRX_SYS_SPACE ||
               fil_tablespace_lookup_for_recovery(space_id)) {
@@ -3182,6 +3196,7 @@ static bool recv_multi_rec(byte *ptr, byte *end_ptr) {
             recv_sys->missing_ids.insert(space_id);
           }
 #endif /* !UNIV_HOTBACKUP */
+
         }
     }
 
@@ -3479,9 +3494,9 @@ bool meb_scan_log_recs(
     }
 
 
-    // 读取当前 block 中 redo 的长度
+    // 读取当前块中存储的数据量，一个块大小默认是 log_block 512 字节
     ulint data_len = log_block_get_data_len(log_block);
-
+    // 是否结束
     if (scanned_lsn + data_len > recv_sys->scanned_lsn &&
         log_block_get_checkpoint_no(log_block) < recv_sys->scanned_checkpoint_no &&
         (recv_sys->scanned_checkpoint_no - log_block_get_checkpoint_no(log_block) > 0x80000000UL)) {
@@ -3538,6 +3553,7 @@ bool meb_scan_log_recs(
 
     scanned_lsn += data_len;
 
+    // 当前块有数据，处理当前块
     if (scanned_lsn > recv_sys->scanned_lsn) {
 #ifndef UNIV_HOTBACKUP
       if (srv_read_only_mode) {
@@ -3577,11 +3593,13 @@ bool meb_scan_log_recs(
       }
 
       if (!recv_sys->found_corrupt_log) {
+        // 把当前块真正日志数据拿出来，放到 recv_sys 缓存去
         more_data = recv_sys_add_to_parsing_buf(log_block, scanned_lsn);
       }
 
-      recv_sys->scanned_lsn = scanned_lsn;
 
+      // 更新 scanned_lsn , 表示已经扫描到这里
+      recv_sys->scanned_lsn = scanned_lsn;
       recv_sys->scanned_checkpoint_no = log_block_get_checkpoint_no(log_block);
     }
 
@@ -3591,14 +3609,13 @@ bool meb_scan_log_recs(
     //       - 如果为512，则此block不为最后一个redo记录的block
     //       - 如果小于512，则此block为mysql服务停止后，最后一个redo记录的block
 
-
-    // 如果当前 block 中 redo 的长度不足 512 ，则 redo 全部读取完成，退出循环。
+    // 如果当前 block 中 redo 的长度不足 512 ，则 redo 全部读取完成，已经到了日志结束的位置，退出循环。
     if (data_len < OS_FILE_LOG_BLOCK_SIZE) {
       /* Log data for this group ends here */
       finished = true;
       break;
     } else {
-      // 记录当前 redo 日志总长度
+      // 没结束则扫下一个块
       log_block += OS_FILE_LOG_BLOCK_SIZE;
     }
 
@@ -3617,7 +3634,8 @@ bool meb_scan_log_recs(
     }
   }
 
-  // 开始解析 parse buffer 内的 redo log 。
+
+  // 上面已经将当前块或者之前块日志放入 recv_sys 缓存了，下面是对这部分数据进行处理，调用 recv_parse_log_recs 。
   if (more_data && !recv_sys->found_corrupt_log) {
     /* Try to parse more log records */
     recv_parse_log_recs(checkpoint_lsn);
@@ -3628,9 +3646,9 @@ bool meb_scan_log_recs(
     }
 #endif /* !UNIV_HOTBACKUP */
 
+    // 处理掉一部分日志后，缓冲区一般会有部分剩余不完整的日志，这部分日志需要读取更多日志，拼接后继续处理。
     if (recv_sys->recovered_offset > recv_sys->buf_len / 4) {
       /* Move parsing buffer data to the buffer start */
-
       recv_reset_buffer();
     }
   }
