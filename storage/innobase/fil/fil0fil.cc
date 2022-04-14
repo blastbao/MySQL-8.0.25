@@ -336,9 +336,11 @@ static const size_t MAX_PAGES_TO_READ = 1;
 static const size_t MAX_SHARDS = 69;
 
 /** The redo log is in its own shard. */
+/* Redo Log 的 shard */
 static const size_t REDO_SHARD = MAX_SHARDS - 1;
 
 /** Number of undo shards to reserve. */
+/* 分配 4 个 shard 给 Undo Log */
 static const size_t UNDO_SHARDS = 4;
 
 /** The UNDO logs have their own shards (4). */
@@ -1368,8 +1370,132 @@ class Fil_shard {
 /** The tablespace memory cache; also the totality of logs (the log
 data space) is stored here; below we talk about tablespaces, but also
 the ib_logfiles form a 'space' and it is handled here */
+//
+
+
+// 通常，我们使用MySQL Client连上MySQL Server后，对数据做增删改查，MySQL 实际是将数据文件都封装成了逻辑语义的 Database 和 Table，
+// 用户只需要感知 Database 和 Table 就可以完成对数据库的 CRUD 操作，实际上这些操作最终都会转化为对实际的文件操作。
+//
+// 我们先看一下 MySQL Server 初始化后，都包含哪些重要的物理文件：
+//   ibdata1                     --主系统表空间文件
+//   ib_logfile0, ib_logfile1    --redo log文件
+//   ibtmp1                      --临时表空间文件
+//   undo_001..                  --undo 系统文件
+//   mysql-bin.000001..          --binlog文件
+//   db/t1.ibd                   --用户表空间文件
+//
+//
+// 在 InnoDB 中，表空间是基本的数据单元，比如系统表属于系统表空间(System tablespace)，Undo Log属于(Undo Tablespaces).
+// 由表空间来管理其文件和元信息.
+
+
+// InnoDB 采用将存储的数据按表空间（tablespace）进行存放的设计。
+// 在默认配置下会有一个初始大小为 10MB ，名为 ibdata1 的文件。
+// 该文件就是默认的表空间文件（tablespace file），又称作共享表空间。
+
+// 用户可以通过多个文件组成一个表空间，同时指定文件的属性。
+// 例如将 /db/ibdata1 和 /dr2/db/ibdata2 两个文件用来组成表空间。
+// 若这两个文件位于不同的磁盘上，磁盘的负载可能被平均，因此可以提高数据库的整体性能。
+// 同时，两个文件的文件名后都跟了属性，表示文件 idbdata1 的大小为 2000MB ，
+// 文件 ibdata2 的大小为 2000MB ，如果用完了这 2000MB ，该文件可以自动增长（autoextend）
+
+// 表空间有两种
+//  -
+//
+
+
+// 在 InnoDB 的内存中维护了一个 Fil_system 的数据结构来缓存整个文件管理.
+// Fil_system 分为 64 个 shard . 而每个 shard 管理多个 Tablespace , 层级关系为: Fil_system->shard->Tablespace
+//
+// 64 个 shard 中，第 1 个即索引为 0 的 shard 属于系统表空间，
+// 最后一个 shard 即索引为 63 的 shard 为 Redo Log 的 Tablespace , 而 58-61 是属于 Undo Log 的 shard 。
+//
+// 在 shard 中的每一个 Tablespace 都有唯一的 ID ，通过 shard_by_id() 函数寻找所属的 shard 。
+// 每一个 Tablespace 都对应一个或多个物理文件 fil_node_t 。
+
+// InnoDB 将文件分为 Log 文件(Redo Log、Undo Log)、系统表空间文件 ibdata 、临时表空间文件、用户表空间。
+// 其中数据文件 (.ibd) 都由 Pages->Extents->Segments->TableSpaces 多级组成。
+//
+// Tablespace 是由多个 Segment 组成，而每个 Segment 又由多个 Extent 组成，每个 Extent 由多个 Page 组成，
+// Extent 中 Page 的数量由其 Page 的大小决定, 对应关系如下:
+//
+//   /** File space extent size in pages
+//   page size | file space extent size
+//   ----------+-----------------------
+//      4 KiB  | 256 pages = 1 MiB
+//      8 KiB  | 128 pages = 1 MiB
+//     16 KiB  |  64 pages = 1 MiB
+//     32 KiB  |  64 pages = 2 MiB
+//     64 KiB  |  64 pages = 4 MiB
+//   */
+//
+//
+// [Page]
+// 每个 Tablespace 内部都是由 Page 组成，每个 Page 都具有相同的大小，默认的 UNIV_PAGE_SIZE 是 16KB ，
+// 即每个 Extent 的大小为 1M , Page 的大小可以由参数-- innodb-page-size 配置。
+//
+// 需要注意的是 Extent 是一个物理概念，对应的是物理文件上 1MB 空间大小，而 Segment 是一个逻辑概念，便于整个 B tree 索引的管理.
+//
+// [Tablespace]
+// Tablespace 由多个 Page 组成，为了管理这些 Page 也需要一些 Page 存放元信息，所以 Page0、Page1、Page2 和 Page3 包含了这些元信息数据.
+//
+//   /** We initially let it be 4 pages:
+//   page 0 is the fsp header and an extent descriptor page,
+//   page 1 is an ibuf bitmap page,
+//   page 2 is the first inode page,
+//   page 3 will contain the root of the clustered index of the
+//   first table we create here. */
+//
+// 我们这里介绍关于文件管理的 Page 0 和 Page 2 .
+// Page 0 作为 Tablespace 的 Header 其中保存关于 Extent 的信息，而 Page 2 作为管理 Segment 的元信息页面.
+
+
+// 创建 Tablespace 的同时通过 os_file_create() 创建物理文件, 一个 Fil_shard 管理多个 Tablespace ,
+// 一个 Tablespace 根据类型不同会创建一个或者多个文件.
+// 例如数据 Tablespace 仅有一个物理文件，而系统 Tablespace 有多个文件.
+//
+//
+
+//
+//
+// fil_system 是在内存中维护的表文件/表空间信息，对应的数据结构是 Fil_system ，其对象全局只有一个: fil_system 。
+// 与其相关的数据结构有 Fil_shard、fil_space_t 和 fil_node_t 。
+//
+// fil_space_t 代表一个表空间（tablespace），Innodb 在将 innodb_file_per_table 设置为 1 时会
+// 为每个 innodb 表创建一个独立的表空间（table_name.idb），否则所有的表共享系统表空间（ibdata1）。
+//
+// fil_node_t 代表某个表空间中的一个文件，可以是表数据/索引数据/日志数据。
+//
+// 数据库管理了多个表空间，因而 fil_system_t 与 fil_space_t 是一对多的关系，
+// fil_system_t 中使用两个 hash table（分别以 id 和 name 作为 key ）和两个list维护了表空间
+//（其中一个 list 只维护了存在脏数据所有表空间），同时，fil_system_t 维护了所有打开的 fil_node_t 的 LRU 链表。
+//
+//
+// fil_space_t 与 fil_node_t 也是一对多的关系，fil_space_t 维护了内存中打开的所有 fil_node_t 的一个链表，
+// 因此 fil_node_t 中有两个 UT_LIST_NODE_T(fil_node_t) 成员。
+//
+// 可见，fil_system_t 维护 LRU，fil_space_t 维护 chain 。
+
+
+
+// 奔溃恢复前，奔溃时，以及奔溃恢复后，innodb 全局变量 fil_system 对 ibd、redo、undo 文件的处理：
+//
+//   - 奔溃恢复前
+//        - 在 InnoDB 启动时，会先从 datadir 这个目录下 scan 所有的 .ibd、undo 文件，
+//          并且解析其中的 Page0 ，读取对应的 Space_id ，检查是否存在相同 Space_ID 但文件名不同的文件，
+//          将文件名与路径作为一个映射保存在 midrs 中。
+//        - 打开系统表空间、redo 表空间并加载到 fil_system 内存中。
+//  - 奔溃恢复时，按需调用 fil_tablespace_open_for_recovery ，打开相应用户 ibd 文件进行恢复
+//  - 奔溃恢复后、事务回滚阶段之前，fil_system 打开 undo 文件，创建打开 ibtmp1、.ibt 文件
+//  - 奔溃恢复结束后、事务回滚阶段
+//        - 在 boot_tablespaces 函数中，会把 DD 中所保存的表空间全部进行validate check一遍，
+//          用于检查是否有丢失 ibd 文件或者数据有残缺等情况，在这个过程中，会把 DD 中的表空间信息，
+//          且在 crash recovery 中未能 open 的表空间全部打开一遍，并保存在 Fil_system 中，
+//          至此整个 InnoDB 中所有的表空间都加载到 fil_system 内存中。
+//
 class Fil_system {
  public:
+  // 分片管理器，默认有 64 个
   using Fil_shards = std::vector<Fil_shard *>;
 
   /** Constructor.
@@ -1723,21 +1849,25 @@ class Fil_system {
   Fil_shard *shard_by_id(space_id_t space_id) const
       MY_ATTRIBUTE((warn_unused_result)) {
 #ifndef UNIV_HOTBACKUP
+
+    /* 假如 Tablespace ID 为 dict_sys_t::s_log_space_first_id , 即返回 m_shards[63]
+    */
     if (space_id == dict_sys_t::s_log_space_first_id) {
       return m_shards[REDO_SHARD];
 
+    /* 假如 Tablespace ID 为 dict_sys_t::s_min_undo_space_id 与 dict_sys_t::s_max_undo_space_id 之间，
+       则返回 m_shards[UNDO_SHARDS_START + limit]
+    */
     } else if (fsp_is_undo_tablespace(space_id)) {
       const size_t limit = space_id % UNDO_SHARDS;
-
       return m_shards[UNDO_SHARDS_START + limit];
     }
 
+    /* 其余的 Tablespace 根据 ID 求模获取对应的 shard */
     ut_ad(m_shards.size() == MAX_SHARDS);
-
     return m_shards[space_id % UNDO_SHARDS_START];
 #else  /* !UNIV_HOTBACKUP */
     ut_ad(m_shards.size() == 1);
-
     return m_shards[0];
 #endif /* !UNIV_HOTBACKUP */
   }
@@ -1850,26 +1980,33 @@ class Fil_system {
   Fil_shards m_shards;
 
   /** n_open is not allowed to exceed this */
+  //允许打开的最大文件数 默认1024
   const size_t m_max_n_open;
 
   /** Maximum space id in the existing tables, or assigned during
   the time mysqld has been up; at an InnoDB startup we scan the
   data dictionary and set here the maximum of the space id's of
   the tables there */
+  //当前系统最大表空间id，启动时打开space时也会赋值，创建新表时会赋值
   space_id_t m_max_assigned_id;
 
   /** true if fil_space_create() has issued a warning about
   potential space_id reuse */
+  //space id重用告警
   bool m_space_id_reuse_warned;
 
   /** List of tablespaces that have been relocated. We need to
   update the DD when it is safe to do so. */
+  // 用于存放 space id 不变但文件路径改变的文件，
+  // 在 innobase_dict_recover 的 boot_tablespaces 流程构建，并在 fil_open_for_business 流程更新 fil_system 。
   dd_fil::Tablespaces m_moved;
 
   /** Tablespace directories scanned at startup */
+  //表空间目录路径， 在 innobase_post_recover 阶段会清空 ibd、undo 目录路径
   Tablespace_dirs m_dirs;
 
   /** Old file paths during 5.7 upgrade. */
+  //5.7升级使用
   std::vector<std::string> m_old_paths;
 
   // Disable copying
@@ -5864,26 +6001,20 @@ dberr_t fil_ibd_open(bool validate, fil_type_t purpose, space_id_t space_id,
   }
 
   space = fil_space_create(space_name, space_id, flags, purpose);
-
   if (space == nullptr) {
     return DB_ERROR;
   }
 
-  /* We do not measure the size of the file, that is why
-  we pass the 0 below */
+  /* We do not measure the size of the file, that is why we pass the 0 below */
 
-  const fil_node_t *file =
-      shard->create_node(df.filepath(), 0, space, false,
-                         IORequest::is_punch_hole_supported(), atomic_write);
-
+  const fil_node_t *file = shard->create_node(df.filepath(), 0, space, false, IORequest::is_punch_hole_supported(), atomic_write);
   if (file == nullptr) {
     return DB_ERROR;
   }
 
   if (validate && !old_space && !for_import) {
     if (df.server_version() > DD_SPACE_CURRENT_SRV_VERSION) {
-      ib::error(ER_IB_MSG_1272, ulong{DD_SPACE_CURRENT_SRV_VERSION},
-                ulonglong{df.server_version()});
+      ib::error(ER_IB_MSG_1272, ulong{DD_SPACE_CURRENT_SRV_VERSION}, ulonglong{df.server_version()});
       /* Server version is less than the tablespace server version.
       We don't support downgrade for 8.0 server, so report error */
       return DB_SERVER_VERSION_LOW;
@@ -5910,7 +6041,6 @@ dberr_t fil_ibd_open(bool validate, fil_type_t purpose, space_id_t space_id,
     byte *key = df.m_encryption_key;
 
     err = fil_set_encryption(space->id, Encryption::AES, key, iv);
-
     if (err != DB_SUCCESS) {
       return DB_ERROR;
     }
@@ -11289,13 +11419,18 @@ on the first page then try finding the ID with Datafile::find_space_id().
 @param[in]	filename	File name to check
 @return s_invalid_space_id if not found, otherwise the space ID */
 space_id_t Fil_system::get_tablespace_id(const std::string &filename) {
+
+
+  // 打开文件
   FILE *fp = fopen(filename.c_str(), "rb");
 
+  // 不存在
   if (fp == nullptr) {
     ib::warn(ER_IB_MSG_372) << "Unable to open '" << filename << "'";
     return dict_sys_t::s_invalid_space_id;
   }
 
+  //
   std::vector<space_id_t> space_ids;
   auto page_size = srv_page_size;
 
@@ -11385,14 +11520,11 @@ space_id_t Fil_system::get_tablespace_id(const std::string &filename) {
     ut_a(file.is_open());
     ut_a(err == DB_SUCCESS);
 
-    /* Use the heavier Datafile::find_space_id() method to
-    find the space id. */
+    /* Use the heavier Datafile::find_space_id() method to find the space id. */
     err = file.find_space_id();
-
     if (err == DB_SUCCESS) {
       space_id = file.space_id();
     }
-
     file.close();
   }
 
@@ -11573,7 +11705,8 @@ static bool fil_get_partition_file(const std::string &old_path,
 
 #ifndef UNIV_HOTBACKUP
 static void fil_rename_partition_file(const std::string &old_path,
-                                      ib_file_suffix extn, bool revert,
+                                      ib_file_suffix extn,
+                                      bool revert,
                                       bool import) {
   std::string new_path;
 
@@ -11596,13 +11729,11 @@ static void fil_rename_partition_file(const std::string &old_path,
     if (!new_exists || old_exists) {
       return;
     }
-    ret = os_file_rename(innodb_data_file_key, new_path.c_str(),
-                         old_path.c_str());
+    ret = os_file_rename(innodb_data_file_key, new_path.c_str(), old_path.c_str());
     ut_ad(ret);
 
     if (ret && print_downgrade) {
-      ib::info(ER_IB_MSG_DOWNGRADE_PARTITION_FILE, new_path.c_str(),
-               old_path.c_str());
+      ib::info(ER_IB_MSG_DOWNGRADE_PARTITION_FILE, new_path.c_str(), old_path.c_str());
       print_downgrade = false;
     }
     return;
@@ -11613,8 +11744,7 @@ static void fil_rename_partition_file(const std::string &old_path,
     return;
   }
 
-  ret =
-      os_file_rename(innodb_data_file_key, old_path.c_str(), new_path.c_str());
+  ret = os_file_rename(innodb_data_file_key, old_path.c_str(), new_path.c_str());
 
   if (!ret) {
     /* File rename failed. */

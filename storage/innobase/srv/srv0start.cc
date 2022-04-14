@@ -1918,6 +1918,125 @@ static lsn_t srv_prepare_to_delete_redo_log_files(ulint n_files) {
 //   |   |-recv_parse_or_apply_log_rec_body()
 //   |
 //   |-recv_recovery_from_checkpoint_finish()          完成崩溃恢复
+
+
+// [file_system]
+//
+// srv_start 阶段与 fil_system 相关的步骤如下：
+//   初始化 fil_system
+//   设置 fil_system 扫描文件的绝对路径
+//   扫描绝对路径下的文件，将 ibd、undo 文件加入到 fil_system->m_dirs 中
+//   将 ibdata1 加入到 fil_system 内存中，此时文件未打开
+//   将 redo log 加入到 fil_system 内存中，此时文件未打开
+//   fil_system 打开 ibdata1 、redo log 文件
+//   奔溃恢复阶段打开需要恢复的 ibd 文件
+//   fil_system 打开 undo 文件
+//   fil_system 打开 ibtmp1、以及 session 临时表空间 '#innodb_temp' 下的 10 个临时文件 temp_1.ibt~temp_10.ibt
+//
+// 在 InnoDB 启动时，首先会通过 fil_set_scan_dir 设置数据文件绝对目录。
+// 然后进入 fil_scan_for_tablespace s，并行扫描 datadir 这个目录下 scan 所有的 ibd、undo 文件，
+// 读取每个文件的 0 号 Page ，解析获得文件对应的 space id ，检查是否存在相同 space id 但文件名不同的文件，
+// 并且和文件名也就是 Tablespace 名做一个映射，保存在 Fil_system 的 Tablespace_dirs midrs 中，
+// 这个 mdirs 主要用来在 InnoDB 的 crash recovery 阶段解析 log record 时，通过 space_id 拿到文件名。
+//
+// 在 InnoDB 运行过程中，在内存中会保存所有 Tablesapce 的 Space_id ，Space_name 以及相应的 ”.ibd” 文件的映射，
+// 这个结构都存储在 InnoDB 的 Fil_system 这个对象中，在 Fil_system 这个对象中又包含 64 个shard，
+// 每个 shard 又会管理多个 Tablespace，整体的关系为：Fil_system -> shard -> Tablespace。
+//
+// InnoDB 并不是在启动的时候就打开所有的用户表空间文件，而是在 redo log 回放过程中按需打开用户表空间文件
+// (recv_apply_hashed_log_recs->fil_tablespace_open_for_recovery)。
+
+
+//   | srv_start
+//   |    |==> 崩溃恢复前准备
+//   |    |==> fil_init //初始化fil_system, 默认最多打开1024个文件，m_shards大小为64
+//   |    |==> fil_set_scan_dir //设置文件扫描最上层目录 ，/mnt/mysql/data/
+//   |    |==> fil_scan_for_tablespaces //扫描所有ibd及undo文件 加入m_dirs中
+//   |    |    |==> Fil_system::scan
+//   |    |    |    |==> Tablespace_dirs::scan
+//   |    |    |    |    |==> fil_get_scan_threads  //根据ibd文件数决定扫描线程数目
+//   |    |    |    |    |==> Tablespace_dirs::duplicate_check
+//   |    |    |    |    |    |==> //根据文件名读取space_id
+//   |    |    |    |    |    |==> Fil_system::get_tablespace_id(phy_filename)
+//   |    |    |    |    |    |==> Tablespace_files::add(space_id, filename)
+//   |    |==> ...
+//   |    |==> srv_sys_space.open_or_create  //打开系统表空间ibdata1，并获取flushed_lsn
+//   |    |    |==> read_lsn_and_check_flags
+//   |    |    |    |==> read_first_page
+//   |    |    |    |==> //将dblwr加载到recv_sys->dblwr内存中，如果ibdata日志损坏，则通过dblwr恢复
+//   |    |    |    |==> recv_sys->dblwr->load
+//   |    |    |    |==> validate_first_page  //校验第一个页是否正常，并读取flushed_lsn
+//   |    |    |    |    |==> mach_read_from_8 //读取LSN，偏移为FIL_PAGE_FILE_FLUSH_LSN
+//   |    |    |    |==> restore_from_doublewrite //如果第一个页异常，则从dblwr拷贝数据到0号页
+//   |    |    |==> fil_space_create // 创建fil_space
+//   |    |    |    |==> fil_system->shard_by_id //根据 space id 获取 shard
+//   |    |    |    |==> shard->space_create //创建fil_space，加入到Fil_shard 的hash table中（m_spaces）
+//   |    |    |    |==> fil_space_t::s_sys_space = space //设置全局变量
+//   |    |    |    |==> fil_space_t::s_redo_space = space //设置全局变量
+//   |    |    |==> fil_node_create //创建fil_node，加入到m_shards[0]->m_spaces[0]->files中
+//   |    |==> ...
+//   |    |==> log_space = fil_space_create //为redo log创建fil_space 加入到fil_system内存中，m_shards[63]
+//   |    |==> fil_node_create //为每个redo log文件创建fil_node_t，加载到m_shards[63]-》m_spaces->files中，此时文件都未打开
+//   |    |==> fil_open_log_and_system_tablespace_files //遍历m_shards 打开 shard->m_spaces->files的所有文件
+//   |    |    |==> fil_system->open_all_system_tablespaces
+//   |    |    |    |==> shard->open_all_system_tablespaces
+//   |    |==> ...
+//   |    |==> //奔溃恢复阶段打开需要恢复的物理文件
+//   |    |==> recv_apply_hashed_log_recs
+//   |    |    |--> fil_tablespace_open_for_recovery
+//   |    |    |    |--> Fil_system::open_for_recovery
+//   |    |    |    |    |--> Fil_system::lookup_for_recovery
+//   |    |    |    |    |    |--> get_scanned_files //根据space id 从m_dirs中查找,如果找不到，则返回false
+//   |    |    |    |    |--> get_scanned_files
+//   |    |    |    |    |--> //如果是活跃的Undo表空间，则返回
+//   |    |    |    |    |--> Fil_system::ibd_open_for_recovery
+//   |    |    |    |    |    |--> 如果已经加载到cache，do nothing
+//   |    |    |    |    |    |--> Fil_shard::ibd_open_for_recovery
+//   |    |    |    |    |    |    |--> //打开文件后，开始校验
+//   |    |    |    |    |    |    |--> Datafile::validate_for_recovery
+//   |    |    |    |    |    |    |    |--> //校验第一页
+//   |    |    |    |    |    |    |    |--> Datafile::validate_first_page
+//   |    |    |    |    |    |    |    |    |--> Datafile::read_first_page//读取第一页，然后检验
+//   |    |    |    |    |    |    |    |    |--> //读取之前的绝对路径，并与现在的对比
+//   |    |    |    |    |    |    |    |    |--> fil_space_read_name_and_filepath
+//   |    |    |    |    |    |    |    |--> //if DB_CORRUPTION
+//   |    |    |    |    |    |    |    |--> open_read_write
+//   |    |    |    |    |    |    |    |--> find_space_id
+//   |    |    |    |    |    |    |    |--> //如果有异常，则从dblwr恢复
+//   |    |    |    |    |    |    |    |--> restore_from_doublewrite
+//   |    |    |    |    |    |    |    |    |--> //copy the page from double write buffer to ibd
+//   |    |    |    |    |    |    |    |    |--> os_file_write
+//   |    |    |    |    |    |    |    |--> //Free previously read first page and then re-validate
+//   |    |    |    |    |    |    |    |--> free_first_page
+//   |    |    |    |    |    |    |    |--> Datafile::validate_first_page //再次检查
+//   |    |    |    |    |    |    |    |--> //end if DB_CORRUPTION
+//   |    |    |    |    |    |    |--> Fil_shard::space_create
+//   |    |    |    |    |    |    |--> create_node /*Attach a file to a tablespace*/
+//   |    |    |    |    |    |    |-->
+//   |    |    |    |    |--> buf_dblwr_recover_pages  //从double write恢复此表所有页面
+//   |    |    |    |    |    |--> buf_dblwr_recover_page
+//   |    |    |    |    |    |--> fil_flush_file_spaces
+//   |    |    |--> fil_tablespace_lookup_for_recovery
+//   |    |    |    |--> Fil_system::lookup_for_recovery
+//   |    |==> ...
+//   |    |==> //打开undo 表空间 m_shard[60] m_shards[61]
+//   |    |==>srv_undo_tablespaces_init
+//   |    |    |-->srv_undo_tablespace_open
+//   |    |    |    |--> fil_space_create
+//   |    |    |    |--> fil_node_create
+//   |    |    |    |--> fil_space_open
+//   |    |==> srv_open_tmp_tablespace //打开temp_1.ibt~temp_10.ibt, 存放在m_shards[13]
+//   |    |    |==> SysTablespace::open_or_create
+//   |    |    |==> fil_space_open
+//   |    |==> ibt::open_or_create  //打开ibtmp1, 存放在m_shards[7] ~m_shards[16]
+//
+//   |==> innobase_init_files
+//   |    |==> srv_start //启动innodb 引擎
+//   |    |==> dd_create_hardcoded/dd_open_hardcoded //创建或打开DD表空间，加入到fil_system中
+//   |    |    |==> fil_ibd_open //打开mysql.ibd 文件,存放在m_shards[14]
+
+
+
 dberr_t srv_start(bool create_new_db) {
   lsn_t flushed_lsn;
 
@@ -2296,6 +2415,19 @@ dberr_t srv_start(bool create_new_db) {
 
   // 读取 ibdata1 文件的第一个 page 的 FIL_PAGE_FILE_FLUSH_LSN 偏移位置存储的 lsn ，即 flushed_lsn 。
   // 如果 ibdata1 文件的第一个 page 损坏了，就从 dblwr 中恢复出来。
+
+  // 数据库启动后，InnoDB 会通过srv_sys_space.open_or_create 函数读取系统表空间中 flushed_lsn ，
+  // 这一个 LSN 只在系统表空间的第一个页中存在，而且只有在正常关闭的时候写入。
+  //
+  // 若系统表空间 0 号页异常，需要从 dblwr 中拷贝数据到系统表空间的 0 号页。
+  //
+  // 此阶段仅仅是为 ibdata1 创建 fil_space_t、fil_node_t 内存结构，并加入到 fil_system 中，系统文件还未打开。
+  //
+  // 其中 fil_system->m_shards 与 space id 的关系，参考函数 Fil_system::shard_by_id ，主要规则如下：
+  //    - 系统表空间存放在 m_shard[0] 中
+  //    - redo log 存放在 m_shards[63]
+  //    - undo log 存放在 m_shards[63]
+  //    - 其他 shard_id = space_id % 58
   err = srv_sys_space.open_or_create(false, create_new_db, &sum_of_new_sizes, &flushed_lsn);
 
   /* FIXME: This can be done earlier, but we now have to wait for

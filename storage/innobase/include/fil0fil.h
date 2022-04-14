@@ -156,13 +156,16 @@ inline bool fil_type_is_data(fil_type_t type) {
 struct fil_space_t;
 
 /** File node of a tablespace or the log data space */
+// fil_node_t 代表某个表空间中的一个文件，可以是表数据、日志数据、临时文件，用于对文件的读写操作。
 struct fil_node_t {
   using List_node = UT_LIST_NODE_T(fil_node_t);
 
   /** tablespace containing this file */
+  // fil_space_t 代表一个表空间（tablespace）
   fil_space_t *space;
 
   /** file name; protected by Fil_shard::m_mutex and log_sys->mutex. */
+  // 文件名
   char *name;
 
   /** whether this file is open. Note: We set the is_open flag after
@@ -230,7 +233,10 @@ struct fil_node_t {
 enum encryption_op_type { ENCRYPTION = 1, DECRYPTION = 2, NONE };
 
 /** Tablespace or log data space */
+//
+// fil_space_t 代表一个表空间（tablespace）
 struct fil_space_t {
+
   using List_node = UT_LIST_NODE_T(fil_space_t);
   using Files = std::vector<fil_node_t, ut_allocator<fil_node_t>>;
 

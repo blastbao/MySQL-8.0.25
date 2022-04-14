@@ -3779,8 +3779,18 @@ data dictionary.
                                         an existing server.
 @retval	true				An error occurred.
 @retval	false				Success - no errors. */
-static bool innobase_dict_recover(dict_recovery_mode_t dict_recovery_mode,
-                                  uint version) {
+
+
+// 在奔溃恢复完成后，在 dd 事务、动态元数据回滚前，需要把 DD 中所保存的 Tablesapce 全部进行 validate check 一遍
+// (Validate_files::check->fil_ibd_open->validate_to_dd)，用于检查是否有丢失ibd文件或者数据有残缺等情况，
+// 在这个过程中，会把所有保存在 DD 中的表空间信息保存在 Fil_system 中，并打开所有未打开的表文件。
+//
+// 文件检查过程中若发现文件路径改变了，需要将文件信息加入到 fil_system->m_moved 中，
+// 后继流程会调用函数 fil_open_for_business 更新 fil_system 内存中的这些文件.
+//
+//
+
+static bool innobase_dict_recover(dict_recovery_mode_t dict_recovery_mode, uint version) {
   THD *thd = current_thd;
 
   switch (dict_recovery_mode) {

@@ -49,9 +49,7 @@ int Clone_Snapshot::get_file_from_desc(Clone_File_Meta *&file_desc,
   auto idx = file_desc->m_file_index;
 
   ut_ad(m_snapshot_handle_type == CLONE_HDL_APPLY);
-
-  ut_ad(m_snapshot_state == CLONE_SNAPSHOT_FILE_COPY ||
-        m_snapshot_state == CLONE_SNAPSHOT_REDO_COPY);
+  ut_ad(m_snapshot_state == CLONE_SNAPSHOT_FILE_COPY || m_snapshot_state == CLONE_SNAPSHOT_REDO_COPY);
 
   Clone_File_Vec &file_vector = (m_snapshot_state == CLONE_SNAPSHOT_FILE_COPY)
                                     ? m_data_file_vector
